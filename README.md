@@ -6,6 +6,7 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 - Always on top, **never takes focus**, **clicks pass through** to the app underneath
 - One small handle (top-right `···`) is the only clickable spot; click it to open the controls
 - Controls: move (drag the title), resize (corner grip), toggle album art / play-pause, text size, re-search lyrics, quit
+- Tray icon (Windows) / menu-bar icon (macOS) to hide/show the overlay or quit
 - Remembers window position, size and toggles; caches lyrics on disk so known songs work offline
 
 ## How it works
@@ -60,7 +61,7 @@ Set `MAGICLYRICS_DEBUG=1` to log each lyrics provider's result to stderr.
 
 Tauri can't build Mac apps on Windows; build on a Mac or with GitHub Actions.
 
-- **GitHub Actions:** `.github/workflows/build-macos.yml` (Actions tab → *Build macOS* → *Run workflow*, or push a `v*` tag). Download the `.dmg` from the run's *Artifacts*.
+- **GitHub Actions:** `.github/workflows/build-macos.yml` runs on every push to `main` (and on PRs / *Run workflow*); download the `.dmg` from the run's *Artifacts*. Pushing a `v*` tag (e.g. `git tag v0.1.1 && git push origin v0.1.1`) also publishes it as a GitHub Release.
 - **On a Mac:** needs Xcode Command Line Tools, Rust (`rustup target add aarch64-apple-darwin x86_64-apple-darwin`), Node and `brew install cmake`.
 
   ```bash

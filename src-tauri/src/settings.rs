@@ -16,6 +16,9 @@ pub struct Settings {
     pub y: Option<i32>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// macOS: x/y/width/height are logical points (older builds saved mismatched
+    /// "physical" values, which are discarded once). Unused on Windows (physical pixels).
+    pub geometry_logical: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +33,7 @@ impl Default for Settings {
             y: None,
             width: None,
             height: None,
+            geometry_logical: false,
         }
     }
 }

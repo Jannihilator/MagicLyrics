@@ -48,12 +48,25 @@ pub fn harden(win: &WebviewWindow) {
 }
 
 fn cursor_over_clickable(app: &AppHandle, win: &WebviewWindow, state: &AppState) -> bool {
-    let rects = state.hit_rects.lock().unwrap();
+    // Copy and release the lock before any window call: those round-trip to the main
+    // thread, which may itself be blocked waiting for this lock in `set_hit_rects`
+    // (sync commands run on the main thread) — that deadlock froze the app on resize.
+    let rects: Vec<Rect> = state.hit_rects.lock().unwrap().clone();
     if rects.is_empty() {
         return false;
     }
     let (Ok(c), Ok(p)) = (app.cursor_position(), win.inner_position()) else { return false };
+    #[cfg(not(target_os = "macos"))]
     let (cx, cy) = (c.x - p.x as f64, c.y - p.y as f64);
+    // macOS: tao converts the cursor to "physical" with the *primary* display's scale but
+    // the window position with the scale of the display the window is on. Go through
+    // logical points (macOS's native unit) so this works on mixed-scale multi-monitor setups.
+    #[cfg(target_os = "macos")]
+    let (cx, cy) = {
+        let s = win.scale_factor().unwrap_or(1.0);
+        let ps = app.primary_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(s);
+        ((c.x / ps - p.x as f64 / s) * s, (c.y / ps - p.y as f64 / s) * s)
+    };
     rects.iter().any(|r| cx >= r.x && cx < r.x + r.w && cy >= r.y && cy < r.y + r.h)
 }
 

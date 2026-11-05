@@ -16,7 +16,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size, State,
+    WebviewWindow, WindowEvent,
+};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,10 +145,50 @@ fn set_lyrics_offset(state: State<AppState>, offset_ms: i64) {
 }
 
 #[tauri::command]
-fn quit(app: AppHandle, state: State<AppState>) {
-    let s = state.settings.lock().unwrap().clone();
-    settings::save(&state.settings_path, &s);
+fn quit(app: AppHandle) {
+    save_and_exit(&app);
+}
+
+fn save_and_exit(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let s = st.settings.lock().unwrap().clone();
+    settings::save(&st.settings_path, &s);
     app.exit(0);
+}
+
+// ---------------------------------------------------------------- tray / menu bar
+
+/// System-tray (Windows) / menu-bar (macOS) icon: always a way to hide or quit,
+/// even when the overlay itself is off-screen or unresponsive to clicks.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let toggle = MenuItem::with_id(app, "toggle", "Hide Lyrics", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit MagicLyrics", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&toggle, &sep, &quit])?;
+
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("MagicLyrics")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(move |app, ev| match ev.id.as_ref() {
+            "toggle" => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let visible = win.is_visible().unwrap_or(true);
+                    let _ = if visible { win.hide() } else { win.show() };
+                    let _ = toggle.set_text(if visible { "Show Lyrics" } else { "Hide Lyrics" });
+                }
+            }
+            "quit" => save_and_exit(app),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------- lyrics
@@ -283,22 +326,40 @@ fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>, preferred_app: Stri
 
 // ---------------------------------------------------------------- window
 
+/// Saved geometry is in logical points on macOS and physical pixels elsewhere.
+/// On macOS tao's "physical" values each use a different display's scale factor,
+/// so they don't line up across mixed-scale monitors; logical points (macOS's own
+/// unit) do. Returns how many saved units one "physical" unit of `scale` is.
+fn geom_div(scale: f64) -> f64 {
+    if cfg!(target_os = "macos") { scale } else { 1.0 }
+}
+
+fn to_size(w: u32, h: u32) -> Size {
+    if cfg!(target_os = "macos") { LogicalSize::new(w as f64, h as f64).into() } else { PhysicalSize::new(w, h).into() }
+}
+
+fn to_position(x: i32, y: i32) -> Position {
+    if cfg!(target_os = "macos") { LogicalPosition::new(x as f64, y as f64).into() } else { PhysicalPosition::new(x, y).into() }
+}
+
 /// Restore saved size/position; returns false when a default position was used.
 fn restore_geometry(win: &WebviewWindow, s: &Settings) -> bool {
     if let (Some(w), Some(h)) = (s.width, s.height) {
         if w >= 100 && h >= 50 {
-            let _ = win.set_size(PhysicalSize::new(w, h));
+            let _ = win.set_size(to_size(w, h));
         }
     }
     if let (Some(x), Some(y)) = (s.x, s.y) {
         // Only restore if that spot is still on a connected monitor.
         let on_screen = win.available_monitors().unwrap_or_default().iter().any(|m| {
-            let (p, sz) = (m.position(), m.size());
-            let (cx, cy) = (x + 40, y + 20);
-            cx >= p.x && cy >= p.y && cx < p.x + sz.width as i32 && cy < p.y + sz.height as i32
+            let k = geom_div(m.scale_factor());
+            let (px, py) = (m.position().x as f64 / k, m.position().y as f64 / k);
+            let (pw, ph) = (m.size().width as f64 / k, m.size().height as f64 / k);
+            let (cx, cy) = ((x + 40) as f64, (y + 20) as f64);
+            cx >= px && cy >= py && cx < px + pw && cy < py + ph
         });
         if on_screen {
-            let _ = win.set_position(PhysicalPosition::new(x, y));
+            let _ = win.set_position(to_position(x, y));
             return true;
         }
     }
@@ -322,6 +383,11 @@ pub fn run() {
 
             let settings_path = settings::path(&app.path().app_config_dir()?);
             let mut s = settings::load(&settings_path);
+            if cfg!(target_os = "macos") && !s.geometry_logical {
+                // Saved by an older build in mismatched units: start from the default spot once.
+                (s.x, s.y, s.width, s.height) = (None, None, None, None);
+                s.geometry_logical = true;
+            }
             let cache = LyricsCache::new(app.path().app_cache_dir()?.join("lyrics"));
             let (tx, rx) = mpsc::channel();
             let preferred = s.preferred_app.clone();
@@ -329,8 +395,12 @@ pub fn run() {
             let win = app.get_webview_window("main").expect("main window");
             let restored = restore_geometry(&win, &s);
             if !restored {
-                if let (Ok(p), Ok(sz)) = (win.outer_position(), win.inner_size()) {
-                    (s.x, s.y, s.width, s.height) = (Some(p.x), Some(p.y), Some(sz.width), Some(sz.height));
+                if let (Ok(p), Ok(sz), Ok(sf)) = (win.outer_position(), win.inner_size(), win.scale_factor()) {
+                    let k = geom_div(sf);
+                    s.x = Some((p.x as f64 / k).round() as i32);
+                    s.y = Some((p.y as f64 / k).round() as i32);
+                    s.width = Some((sz.width as f64 / k).round() as u32);
+                    s.height = Some((sz.height as f64 / k).round() as u32);
                 }
             }
 
@@ -348,6 +418,7 @@ pub fn run() {
                 cache,
             });
 
+            build_tray(app)?;
             overlay::harden(&win);
             // macOS: stay visible on every Space and over full-screen apps.
             #[cfg(target_os = "macos")]
@@ -363,15 +434,17 @@ pub fn run() {
             let Some(st) = win.try_state::<AppState>() else { return };
             match ev {
                 WindowEvent::Moved(p) => {
+                    let k = geom_div(win.scale_factor().unwrap_or(1.0));
                     let mut s = st.settings.lock().unwrap();
-                    s.x = Some(p.x);
-                    s.y = Some(p.y);
+                    s.x = Some((p.x as f64 / k).round() as i32);
+                    s.y = Some((p.y as f64 / k).round() as i32);
                     st.settings_dirty.store(true, Ordering::Relaxed);
                 }
                 WindowEvent::Resized(sz) if sz.width > 0 && sz.height > 0 => {
+                    let k = geom_div(win.scale_factor().unwrap_or(1.0));
                     let mut s = st.settings.lock().unwrap();
-                    s.width = Some(sz.width);
-                    s.height = Some(sz.height);
+                    s.width = Some((sz.width as f64 / k).round() as u32);
+                    s.height = Some((sz.height as f64 / k).round() as u32);
                     st.settings_dirty.store(true, Ordering::Relaxed);
                 }
                 _ => {}
