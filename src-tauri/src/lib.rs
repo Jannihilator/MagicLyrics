@@ -45,6 +45,8 @@ pub struct UiState {
     playback: Option<Playback>,
     art: Option<String>,
     lyrics: LyricsState,
+    /// Brightness (0..1) of what's behind the overlay. Windows only; None elsewhere.
+    backdrop_luma: Option<f64>,
 }
 
 pub struct AppState {
@@ -87,6 +89,9 @@ fn update_settings(
     show_play_pause: Option<bool>,
     show_title: Option<bool>,
     font_size: Option<u32>,
+    theme: Option<String>,
+    panel_opacity: Option<String>,
+    accent: Option<String>,
 ) -> Settings {
     let mut s = state.settings.lock().unwrap();
     if let Some(v) = show_art {
@@ -99,7 +104,17 @@ fn update_settings(
         s.show_title = v;
     }
     if let Some(v) = font_size {
-        s.font_size = v.clamp(10, 64);
+        s.font_size = v.clamp(12, 36); // matches the UI slider
+    }
+    if let Some(v) = theme.filter(|v| matches!(v.as_str(), "auto" | "dark" | "light")) {
+        s.theme = v;
+    }
+    if let Some(v) = panel_opacity.filter(|v| matches!(v.as_str(), "low" | "medium" | "high")) {
+        s.panel_opacity = v;
+    }
+    let is_hex = |v: &String| v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+    if let Some(v) = accent.filter(is_hex) {
+        s.accent = v.to_ascii_lowercase();
     }
     state.settings_dirty.store(true, Ordering::Relaxed);
     s.clone()
@@ -236,10 +251,10 @@ fn start_lyrics(app: &AppHandle, track: Track) {
 
 // ---------------------------------------------------------------- media worker
 
-fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>, preferred_app: String) {
+fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>) {
     std::thread::spawn(move || {
         media::init_thread();
-        let mut src = media::new_source(&preferred_app, app.path().resource_dir().ok());
+        let mut src = media::new_source(app.path().resource_dir().ok());
         let mut cur_key = String::new();
         let mut stable_polls = 0u32;
         let mut lyrics_started = false;
@@ -390,7 +405,6 @@ pub fn run() {
             }
             let cache = LyricsCache::new(app.path().app_cache_dir()?.join("lyrics"));
             let (tx, rx) = mpsc::channel();
-            let preferred = s.preferred_app.clone();
 
             let win = app.get_webview_window("main").expect("main window");
             let restored = restore_geometry(&win, &s);
@@ -420,14 +434,11 @@ pub fn run() {
 
             build_tray(app)?;
             overlay::harden(&win);
-            // macOS: stay visible on every Space and over full-screen apps.
-            #[cfg(target_os = "macos")]
-            let _ = win.set_visible_on_all_workspaces(true);
             let _ = win.set_ignore_cursor_events(true);
             let _ = win.show();
 
             overlay::spawn_hit_tester(app.handle().clone());
-            spawn_media_worker(app.handle().clone(), rx, preferred);
+            spawn_media_worker(app.handle().clone(), rx);
             Ok(())
         })
         .on_window_event(|win, ev| {

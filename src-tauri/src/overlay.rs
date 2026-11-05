@@ -9,7 +9,7 @@
 use crate::AppState;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 /// Physical pixels relative to the window's client area.
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
@@ -43,8 +43,41 @@ pub fn harden(win: &WebviewWindow) {
             });
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    macos::float_everywhere(win);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = win;
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use tauri::WebviewWindow;
+
+    // NSWindowCollectionBehavior bits.
+    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+    const STATIONARY: usize = 1 << 4;
+    const IGNORES_CYCLE: usize = 1 << 6;
+    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+    /// NSStatusWindowLevel: above normal and floating windows, including full-screen apps.
+    const STATUS_WINDOW_LEVEL: isize = 25;
+
+    /// Show on every Space, including other apps' full-screen Spaces. `alwaysOnTop` alone
+    /// (NSFloatingWindowLevel, no FullScreenAuxiliary) keeps the window out of those.
+    /// Needs the Accessory activation policy, which `run()` sets. Main thread only.
+    pub fn float_everywhere(win: &WebviewWindow) {
+        let Ok(ptr) = win.ns_window() else { return };
+        if ptr.is_null() {
+            return;
+        }
+        unsafe {
+            let ns = &*(ptr as *const AnyObject);
+            let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
+            let _: () = msg_send![ns, setCollectionBehavior: behavior];
+            let _: () = msg_send![ns, setLevel: STATUS_WINDOW_LEVEL];
+        }
+    }
 }
 
 fn cursor_over_clickable(app: &AppHandle, win: &WebviewWindow, state: &AppState) -> bool {
@@ -88,6 +121,26 @@ pub fn spawn_hit_tester(app: AppHandle) {
                 }
             }
 
+            // Brightness of what's behind the overlay, ~2/s. The UI picks the panel tone
+            // (auto) and a readable text color from it; only meaningful changes are sent.
+            #[cfg(windows)]
+            if tick % 12 == 0 {
+                if let Some(luma) = backdrop_luma(&win) {
+                    let luma = (luma * 50.0).round() / 50.0; // 2% steps
+                    let changed = {
+                        let mut ui = state.ui.lock().unwrap();
+                        let changed = ui.backdrop_luma.map_or(true, |old| (old - luma).abs() >= 0.04);
+                        if changed {
+                            ui.backdrop_luma = Some(luma);
+                        }
+                        changed
+                    };
+                    if changed {
+                        let _ = app.emit("backdrop", luma);
+                    }
+                }
+            }
+
             // Persist settings (window geometry changes often while dragging) ~1/s.
             if tick % 25 == 0 && state.settings_dirty.swap(false, Ordering::Relaxed) {
                 let s = state.settings.lock().unwrap().clone();
@@ -95,6 +148,40 @@ pub fn spawn_hit_tester(app: AppHandle) {
             }
         }
     });
+}
+
+/// Average brightness (0 = black, 1 = white) of a thin band of screen just outside
+/// the window's edges — a stand-in for what's behind it, since the overlay covers
+/// that. Clipped to the window's monitor so off-screen areas don't read as black.
+#[cfg(windows)]
+fn backdrop_luma(win: &WebviewWindow) -> Option<f64> {
+    if !win.is_visible().unwrap_or(false) {
+        return None;
+    }
+    let (p, sz, m) = (win.outer_position().ok()?, win.outer_size().ok()?, win.current_monitor().ok()??);
+    let (mp, ms) = (m.position(), m.size());
+    let clip = (mp.x, mp.y, mp.x + ms.width as i32, mp.y + ms.height as i32);
+    let (l, t, r, b) = (p.x, p.y, p.x + sz.width as i32, p.y + sz.height as i32);
+    const GAP: i32 = 2; // skip the pixels right at the edge
+    const BAND: i32 = 10;
+    let bands = [
+        (l - GAP - BAND, t - GAP - BAND, r + GAP + BAND, t - GAP), // above
+        (l - GAP - BAND, b + GAP, r + GAP + BAND, b + GAP + BAND), // below
+        (l - GAP - BAND, t, l - GAP, b),                           // left
+        (r + GAP, t, r + GAP + BAND, b),                           // right
+    ];
+    let (mut sum, mut n) = (0.0, 0u64);
+    for (x0, y0, x1, y1) in bands {
+        let (x0, y0, x1, y1) = (x0.max(clip.0), y0.max(clip.1), x1.min(clip.2), y1.min(clip.3));
+        if x1 - x0 < 2 || y1 - y0 < 2 {
+            continue;
+        }
+        if let Some((s, c)) = win32::luma_sum(x0, y0, x1 - x0, y1 - y0) {
+            sum += s;
+            n += c;
+        }
+    }
+    (n > 0).then(|| sum / n as f64)
 }
 
 #[cfg(windows)]
@@ -106,6 +193,56 @@ mod win32 {
     use windows::Win32::UI::WindowsAndMessaging::{
         FindWindowExW, ShowWindow, HTTRANSPARENT, MA_NOACTIVATE, SW_HIDE, WM_MOUSEACTIVATE, WM_NCHITTEST,
     };
+
+    /// Sum of per-pixel brightness over a screen rectangle (physical pixels), and the pixel count.
+    pub fn luma_sum(x: i32, y: i32, w: i32, h: i32) -> Option<(f64, u64)> {
+        use windows::Win32::Graphics::Gdi::{
+            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC,
+            SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
+        };
+        unsafe {
+            let screen = GetDC(None);
+            if screen.is_invalid() {
+                return None;
+            }
+            let mem = CreateCompatibleDC(Some(screen));
+            let bmp = CreateCompatibleBitmap(screen, w, h);
+            let old = SelectObject(mem, bmp.into());
+            let ok = BitBlt(mem, 0, 0, w, h, Some(screen), x, y, SRCCOPY).is_ok();
+            SelectObject(mem, old);
+
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h, // top-down
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let lines = if ok {
+                GetDIBits(mem, bmp, 0, h as u32, Some(px.as_mut_ptr().cast()), &mut info, DIB_RGB_COLORS)
+            } else {
+                0
+            };
+            let _ = DeleteObject(bmp.into());
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, screen);
+            if lines != h {
+                return None;
+            }
+            // BGRA; Rec. 709 weights on the (gamma-encoded) values are close enough here.
+            let sum = px
+                .chunks_exact(4)
+                .map(|c| (0.0722 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.2126 * c[2] as f64) / 255.0)
+                .sum();
+            Some((sum, (w * h) as u64))
+        }
+    }
 
     fn hwnd(win: &WebviewWindow) -> Option<HWND> {
         win.hwnd().ok().map(|h| HWND(h.0 as *mut core::ffi::c_void))

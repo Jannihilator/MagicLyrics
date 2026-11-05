@@ -3,11 +3,27 @@
 A small floating lyrics overlay for whatever is playing — Spotify, Apple Music, YouTube / YouTube Music in a browser — on Windows and macOS.
 
 - Synced lyrics that follow the song, minimal translucent look
+- Adapts to what's behind it: dark panel over light backgrounds, light panel over dark ones (Windows; can also be set by hand)
 - Always on top, **never takes focus**, **clicks pass through** to the app underneath
 - One small handle (top-right `···`) is the only clickable spot; click it to open the controls
-- Controls: move (drag the title), resize (corner grip), toggle album art / play-pause, text size, re-search lyrics, quit
+- Controls: move (drag the title), resize (corner grip), toggle album art / title / play-pause, text size, opacity, theme (auto / light / dark), color, sync lyrics, re-search lyrics, quit
 - Tray icon (Windows) / menu-bar icon (macOS) to hide/show the overlay or quit
 - Remembers window position, size and toggles; caches lyrics on disk so known songs work offline
+
+## Least privilege
+
+- Installs per-user (no admin).
+- The UI can only call MagicLyrics' own commands plus window drag/resize (`src-tauri/capabilities/default.json`); no filesystem, shell or HTTP access from the web layer. Strict CSP.
+- Click-through is done by polling the cursor position — no global mouse/keyboard hooks.
+- Auto light/dark (Windows): twice a second it averages the brightness of a thin strip of screen pixels just outside the overlay's edges. Only one number is kept; nothing is saved or sent. Not done on macOS, where it would need the Screen Recording permission.
+- Network: only HTTPS GETs to the lyrics sites below.
+
+## Install
+
+Download the latest build from [Releases](https://github.com/Jannihilator/MagicLyrics/releases):
+
+- **Windows:** `MagicLyrics_x.y.z_x64-setup.exe`. Windows 10/11 (WebView2 is preinstalled on 11). The installer isn't code-signed, so SmartScreen may warn: *More info* → *Run anyway*.
+- **macOS:** `MagicLyrics_x.y.z_universal.dmg` (Apple Silicon + Intel). The app is ad-hoc signed, not notarized. First launch: open the app, then System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/MagicLyrics.app`).
 
 ## How it works
 
@@ -19,61 +35,14 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 | Browser media (YouTube, YouTube Music…) | Song detector in `src-tauri/src/media/browser.rs` | Browsers report the video title and channel name. Non-songs (vlogs, podcasts, trailers, streams, very short/long videos) are skipped; for songs, artist and title are recovered from `Artist - Song (Official Video)`, `Artist【Song】MV`, `Artist - Topic` / `…VEVO` channels. Bilingual titles (`告白氣球 Love Confession`) are also searched as Chinese-only and English-only. |
 | Lyrics (Chinese) | **Mojim 魔鏡歌詞網** (Taiwan) → **LRCLIB** | Simplified results are converted to Traditional |
 | Lyrics (other) | **LRCLIB** → **lyrics.ovh** | LRCLIB has the best free time-synced data |
-| Cache | `%LOCALAPPDATA%\app.magiclyrics.overlay\lyrics\` | Hits kept forever; misses retried after 24 h |
-| Settings | `%APPDATA%\app.magiclyrics.overlay\settings.json` | |
+| Cache | Windows `%LOCALAPPDATA%\app.magiclyrics.overlay\lyrics\` · macOS `~/Library/Caches/app.magiclyrics.overlay/` | Hits kept forever; misses retried after 24 h |
+| Settings | Windows `%APPDATA%\app.magiclyrics.overlay\settings.json` · macOS `~/Library/Application Support/app.magiclyrics.overlay/` | |
 
 Time-synced lyrics are preferred over plain text from any source. Plain lyrics scroll proportionally through the song.
 
-Not used, on purpose:
-- **Spotify's own lyrics**: needs your Spotify session cookie (a login secret) and is against Spotify's terms.
-- **KKBOX**: bot-protection challenge; not bypassed.
-- **NetEase**: search responses are now encrypted.
-
 > As of 2026-11, `mojim.com`'s public DNS points at a private address, so Mojim is unreachable and Chinese songs fall back to LRCLIB. The Mojim parser is in place and will be used automatically if the site comes back.
-
-### Least privilege
-
-- Installs per-user (no admin).
-- The UI can only call MagicLyrics' own 8 commands plus window drag/resize (`src-tauri/capabilities/default.json`); no filesystem, shell or HTTP access from the web layer. Strict CSP.
-- Click-through is done by polling the cursor position — no global mouse/keyboard hooks.
-- Network: only HTTPS GETs to the lyrics sites above.
-
-## Develop
-
-Requirements: Node 18+, Rust (stable, MSVC), WebView2 (preinstalled on Windows 11).
-
-```bash
-npm install
-npm run dev        # run with hot reload
-npm run build      # release exe + NSIS installer in src-tauri/target/release/bundle/nsis/
-```
-
-Tests (`src-tauri/`):
-
-```bash
-cargo test                          # offline unit tests
-cargo test -- --include-ignored     # + live lookups against LRCLIB/Mojim
-```
-
-Set `MAGICLYRICS_DEBUG=1` to log each lyrics provider's result to stderr.
-
-## macOS build
-
-Tauri can't build Mac apps on Windows; build on a Mac or with GitHub Actions.
-
-- **GitHub Actions:** `.github/workflows/build-macos.yml` runs when you push a `v*` tag (e.g. `git tag v0.1.2 && git push origin v0.1.2`) and publishes the `.dmg` as a GitHub Release. For a test build without a release, use Actions tab → *Build macOS* → *Run workflow* and download the `.dmg` from the run's *Artifacts*.
-- **On a Mac:** needs Xcode Command Line Tools, Rust (`rustup target add aarch64-apple-darwin x86_64-apple-darwin`), Node and `brew install cmake`.
-
-  ```bash
-  npm install
-  bash scripts/fetch-mediaremote-adapter.sh   # builds the now-playing helper into src-tauri/macos/
-  npm run dev
-  npm run tauri build -- --target universal-apple-darwin
-  ```
-
-The app is ad-hoc signed, not notarized. First launch: open the app, then System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/MagicLyrics.app`). Settings and cache live in `~/Library/Application Support/app.magiclyrics.overlay/` and `~/Library/Caches/app.magiclyrics.overlay/`.
 
 ## Extending
 
-- **Other players / platforms**: implement `MediaSource` in `src-tauri/src/media/` (e.g. MPRIS on Linux). The Windows backend already works with any player; `preferredApp` in settings picks which one wins when several are active.
+- **Other players / platforms**: implement `MediaSource` in `src-tauri/src/media/` (e.g. MPRIS on Linux). The Windows backend already works with any player; when several are active it follows the one that most recently started playing.
 - **Other lyric sources**: add a module in `src-tauri/src/lyrics/` and put it in the order list in `lyrics/mod.rs`.

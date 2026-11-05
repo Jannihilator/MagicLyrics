@@ -2,6 +2,7 @@
 //! Reads the same data the Windows volume flyout shows. No network, no login.
 
 use super::{MediaSource, Snapshot, Track};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as Session,
@@ -13,15 +14,25 @@ use windows::Storage::Streams::DataReader;
 /// 100ns ticks between 1601-01-01 (WinRT DateTime epoch) and 1970-01-01.
 const EPOCH_DIFF_TICKS: i64 = 116_444_736_000_000_000;
 
+/// Per-session bookkeeping, keyed by the app's AppUserModelId.
+struct Seen {
+    playing: bool,
+    /// Sequence number of the last time this session went from not-playing to playing.
+    started: u64,
+}
+
+/// Follows whichever player most recently started playing (like macOS's Now Playing),
+/// and keeps showing it while paused until another one starts.
 pub struct GsmtcSource {
-    preferred: String,
     manager: Option<Manager>,
     session: Option<Session>,
+    seen: HashMap<String, Seen>,
+    seq: u64,
 }
 
 impl GsmtcSource {
-    pub fn new(preferred_app: &str) -> Self {
-        Self { preferred: preferred_app.to_lowercase(), manager: None, session: None }
+    pub fn new() -> Self {
+        Self { manager: None, session: None, seen: HashMap::new(), seq: 0 }
     }
 
     fn pick_session(&mut self) -> Option<Session> {
@@ -29,20 +40,60 @@ impl GsmtcSource {
             self.manager = Manager::RequestAsync().ok()?.get().ok();
         }
         let mgr = self.manager.as_ref()?;
-        if !self.preferred.is_empty() {
-            if let Ok(list) = mgr.GetSessions() {
-                for i in 0..list.Size().unwrap_or(0) {
-                    if let Ok(s) = list.GetAt(i) {
-                        let id = s.SourceAppUserModelId().map(|h| h.to_string()).unwrap_or_default();
-                        if id.to_lowercase().contains(&self.preferred) {
-                            return Some(s);
-                        }
-                    }
+        let current = mgr.GetCurrentSession().ok();
+        let current_id = current.as_ref().map(app_id).unwrap_or_default();
+
+        let mut sessions: Vec<(String, bool, Session)> = Vec::new();
+        if let Ok(list) = mgr.GetSessions() {
+            for i in 0..list.Size().unwrap_or(0) {
+                if let Ok(s) = list.GetAt(i) {
+                    sessions.push((app_id(&s), is_playing(&s), s));
                 }
             }
         }
-        mgr.GetCurrentSession().ok()
+        // Handle the system's current session last so it wins ties (e.g. several
+        // players already playing when we start).
+        sessions.sort_by_key(|(id, _, _)| *id == current_id);
+
+        // Several sessions can share an app id (browser tabs): the app counts as
+        // playing if any of them is.
+        let mut app_playing: Vec<(&str, bool)> = Vec::new();
+        for (id, playing, _) in &sessions {
+            match app_playing.iter_mut().find(|(a, _)| a == id) {
+                Some(e) => e.1 |= *playing,
+                None => app_playing.push((id, *playing)),
+            }
+        }
+        self.seen.retain(|id, _| app_playing.iter().any(|(a, _)| a == id));
+        for (id, playing) in &app_playing {
+            let e = self.seen.entry(id.to_string()).or_insert(Seen { playing: false, started: 0 });
+            if *playing && !e.playing {
+                self.seq += 1;
+                e.started = self.seq;
+            }
+            e.playing = *playing;
+        }
+
+        // A playing app beats a paused one; among those, the most recently started wins.
+        let rank = |id: &str| self.seen.get(id).map(|e| (e.playing, e.started)).unwrap_or((false, 0));
+        let best = sessions
+            .iter()
+            .filter(|(id, _, _)| rank(id).1 > 0)
+            .max_by_key(|(id, playing, _)| (rank(id), *playing));
+        match best {
+            Some((_, _, s)) => Some(s.clone()),
+            // Nothing has played since launch: fall back to what Windows shows.
+            None => current,
+        }
     }
+}
+
+fn app_id(s: &Session) -> String {
+    s.SourceAppUserModelId().map(|h| h.to_string()).unwrap_or_default()
+}
+
+fn is_playing(s: &Session) -> bool {
+    s.GetPlaybackInfo().and_then(|p| p.PlaybackStatus()).map(|st| st == Status::Playing).unwrap_or(false)
 }
 
 fn now_ticks() -> i64 {
@@ -63,13 +114,8 @@ impl MediaSource for GsmtcSource {
         }
         let artist = props.Artist().map(|h| h.to_string()).unwrap_or_default();
         let album = props.AlbumTitle().map(|h| h.to_string()).unwrap_or_default();
-        let source_app = s.SourceAppUserModelId().map(|h| h.to_string()).unwrap_or_default();
-
-        let playing = s
-            .GetPlaybackInfo()
-            .and_then(|p| p.PlaybackStatus())
-            .map(|st| st == Status::Playing)
-            .unwrap_or(false);
+        let source_app = app_id(&s);
+        let playing = is_playing(&s);
 
         let (mut pos_ticks, end_ticks, updated) = match s.GetTimelineProperties() {
             Ok(t) => (

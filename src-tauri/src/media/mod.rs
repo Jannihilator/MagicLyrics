@@ -53,23 +53,21 @@ pub enum Command {
     TogglePlayPause,
 }
 
-/// Pick the backend for this platform. On Windows `preferred_app` (e.g. "spotify")
-/// is chosen when several players are active; macOS only exposes the one app the
-/// system considers "now playing". `resource_dir` is where bundled helpers live.
-pub fn new_source(preferred_app: &str, resource_dir: Option<std::path::PathBuf>) -> Box<dyn MediaSource> {
+/// Pick the backend for this platform. Both follow whichever player most recently
+/// started playing (no per-app priority). `resource_dir` is where bundled helpers live.
+pub fn new_source(resource_dir: Option<std::path::PathBuf>) -> Box<dyn MediaSource> {
     #[cfg(windows)]
     {
         let _ = resource_dir;
-        Box::new(gsmtc::GsmtcSource::new(preferred_app))
+        Box::new(gsmtc::GsmtcSource::new())
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = preferred_app;
         Box::new(macos::MediaRemoteSource::new(resource_dir))
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = (preferred_app, resource_dir);
+        let _ = resource_dir;
         Box::new(Unsupported)
     }
 }

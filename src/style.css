@@ -1,10 +1,41 @@
+/* Two independent switches on #app:
+   .light = panel color (set by the Color control, or by the background in Auto);
+   .ink   = dark text, chosen from what's really behind the text: the panel blended
+            with the backdrop showing through it. At low opacity the backdrop wins.
+   Faded lines and the text halo get stronger as the panel gets more see-through. */
 :root {
   --fs: 18px;
-  --bg: rgba(14, 14, 18, 0.72);
-  --fg: #fff;
-  --dim: rgba(255, 255, 255, 0.38);
+  --bg-a: .8; /* panel opacity, set from settings */
+  --bg: rgba(14, 14, 18, var(--bg-a));
   --accent: #1ed760;
+  --on-accent: #0b0b0d; /* text / check marks drawn on the accent */
   --radius: 12px;
+  --fg: #fff;
+  --dim: rgba(255, 255, 255, calc(.62 - .24 * var(--bg-a)));
+  --muted: rgba(255, 255, 255, .6);
+  --fg-soft: rgba(255, 255, 255, .85);
+  --soft: rgba(255, 255, 255, .12);
+  --soft-hover: rgba(255, 255, 255, .25);
+  --art-bg: rgba(255, 255, 255, .06);
+  --shadow: 0 0 4px rgba(0, 0, 0, calc(.8 - .6 * var(--bg-a))), 0 1px 3px rgba(0, 0, 0, .6);
+  --grip: rgba(255, 255, 255, .45);
+  --outline: rgba(255, 255, 255, .18);
+}
+
+#app.light #panel { --bg: rgba(246, 246, 249, var(--bg-a)); }
+
+#app.ink #panel, #app.ink #handle, #app.ink #grip {
+  --fg: #141418;
+  --dim: rgba(0, 0, 0, calc(.64 - .24 * var(--bg-a)));
+  --muted: rgba(0, 0, 0, .6);
+  --fg-soft: rgba(0, 0, 0, .80);
+  --soft: rgba(0, 0, 0, .08);
+  --soft-hover: rgba(0, 0, 0, .16);
+  --art-bg: rgba(0, 0, 0, .06);
+  --shadow: 0 0 4px rgba(255, 255, 255, calc(.9 - .6 * var(--bg-a))), 0 1px 2px rgba(255, 255, 255, .4);
+  --grip: rgba(0, 0, 0, .40);
+  --outline: rgba(0, 0, 0, .22);
+  color: var(--fg);
 }
 
 * { box-sizing: border-box; }
@@ -30,7 +61,7 @@ html, body {
   padding: 10px 30px 10px 12px;
   background: var(--bg);
   border-radius: var(--radius);
-  transition: opacity .4s;
+  transition: opacity .4s, background-color .4s;
 }
 #app.idle #panel { opacity: .55; }
 
@@ -48,7 +79,7 @@ html, body {
   height: 56px;
   border-radius: 8px;
   object-fit: cover;
-  background: rgba(255, 255, 255, .06);
+  background: var(--art-bg);
 }
 #art:not([src]), #art[src=""] { visibility: hidden; }
 .round {
@@ -59,18 +90,18 @@ html, body {
   padding: 0;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, .12);
+  background: var(--soft);
   color: var(--fg);
 }
 .round svg { width: 12px; height: 12px; fill: currentColor; }
-.round:hover { background: rgba(255, 255, 255, .25); }
+.round:hover { background: var(--soft-hover); }
 
 /* Song title + artist under the art: narrow column, title up to 2 lines. */
 #song {
   width: 76px;
   text-align: center;
   line-height: 1.25;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
+  text-shadow: var(--shadow);
   margin-top: -2px;
 }
 #songTitle {
@@ -84,7 +115,7 @@ html, body {
 }
 #songArtist {
   font-size: 10.5px;
-  color: rgba(255, 255, 255, .55);
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -117,16 +148,52 @@ html, body {
   line-height: 1.35;
   padding: .18em 0;
   color: var(--dim);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
+  text-shadow: var(--shadow);
   transition: color .3s;
   overflow-wrap: anywhere;
 }
-.line.active { color: var(--fg); font-weight: 600; }
+/* Emphasis without font-weight: real bold makes glyphs wider, which can re-wrap the
+   line just as it's sung. A thin stroke thickens the letters but keeps layout identical. */
+.line.active { color: var(--fg); -webkit-text-stroke: .035em currentColor; }
 .line.gap { opacity: .6; }
-#lines.unsynced .line.active { color: rgba(255, 255, 255, .85); }
-/* While controls are open, clicking a line re-syncs to it. */
-#app.open .line { cursor: pointer; border-radius: 6px; }
-#app.open .line:hover { background: rgba(255, 255, 255, .08); color: rgba(255, 255, 255, .8); }
+#lines.unsynced .line.active { color: var(--fg-soft); }
+/* Sync mode: lyrics are frozen and scrollable; clicking a line syncs to it. */
+#app.syncing #lines { transition: none; }
+#app.syncing #viewport { touch-action: none; }
+#app.syncing .line { cursor: pointer; border-radius: 6px; }
+#app.syncing .line:hover { background: var(--soft); color: var(--fg-soft); }
+
+#syncbar {
+  position: absolute;
+  left: 6px;
+  right: 32px;
+  top: 4px;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 8px;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(12, 12, 16, .92);
+  border-radius: 8px;
+  z-index: 2;
+}
+#app.syncing #syncbar { display: flex; }
+#app.syncing.open #syncbar { display: none; }
+#syncHint { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: rgba(255, 255, 255, .7); }
+#syncOffset { font-variant-numeric: tabular-nums; color: var(--accent); }
+#syncbar button {
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font: inherit;
+  color: #fff;
+  background: rgba(255, 255, 255, .14);
+}
+#syncbar button:hover { background: rgba(255, 255, 255, .26); }
+#syncbar button.primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+#syncbar button.primary:hover { filter: brightness(1.1); }
+#controls button:disabled { opacity: .4; pointer-events: none; }
 
 #status {
   position: absolute;
@@ -136,7 +203,7 @@ html, body {
   text-align: center;
   font-size: calc(var(--fs) * .8);
   color: var(--dim);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
+  text-shadow: var(--shadow);
   padding: 0 8px;
 }
 #status:empty { display: none; }
@@ -153,15 +220,15 @@ html, body {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, .10);
-  color: rgba(255, 255, 255, .55);
+  background: var(--soft);
+  color: var(--muted);
   opacity: .5;
   transition: opacity .15s, background .15s;
   z-index: 3;
   cursor: grab;
 }
 #handle svg { width: 12px; height: 12px; fill: currentColor; }
-#handle:hover, #app.open #handle { opacity: 1; background: rgba(255, 255, 255, .28); color: #fff; }
+#handle:hover, #app.open #handle { opacity: 1; background: var(--soft-hover); color: var(--fg); }
 
 /* ---------- controls ---------- */
 #controls {
@@ -169,13 +236,16 @@ html, body {
   left: 6px;
   right: 32px;
   top: 4px;
+  max-height: calc(100% - 18px);
+  overflow: hidden auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, .25) transparent;
   display: none;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 6px;
-  padding: 3px 6px;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 8px 7px;
   font-size: 12px;
-  background: rgba(0, 0, 0, .72);
+  background: rgba(12, 12, 16, .96);
   border-radius: 8px;
   z-index: 2;
 }
@@ -183,12 +253,132 @@ html, body {
 #controls button {
   border: 0;
   border-radius: 6px;
-  padding: 2px 7px;
+  padding: 2px 8px;
   font: inherit;
   color: var(--fg);
   background: rgba(255, 255, 255, .12);
+  white-space: nowrap;
 }
 #controls button:hover { background: rgba(255, 255, 255, .25); }
+
+/* Sections: small caps label on the left, items wrap on the right. */
+.group { display: flex; align-items: flex-start; gap: 8px; }
+.group h3 {
+  flex: none;
+  width: 52px;
+  margin: 0;
+  padding-top: 4px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, .4);
+}
+.group .items {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.group .name { color: rgba(255, 255, 255, .65); }
+
+/* Sliders: custom track with tick marks at each snap point. */
+.slider { display: flex; align-items: center; gap: 7px; min-width: 0; white-space: nowrap; }
+.slider .track { position: relative; display: block; flex: 0 1 92px; min-width: 48px; height: 20px; }
+.slider input {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  z-index: 1;
+  cursor: pointer;
+}
+.slider input::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent) var(--p, 0%), rgba(255, 255, 255, .22) var(--p, 0%));
+}
+.slider input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+}
+.slider input:active::-webkit-slider-thumb { transform: scale(1.15); }
+/* Inset by half the thumb width so ticks line up with where the thumb stops. */
+.ticks { position: absolute; left: 6px; right: 6px; top: 14px; height: 3px; pointer-events: none; }
+.ticks i {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 3px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, .3);
+}
+.slider output { min-width: 30px; color: var(--fg); font-variant-numeric: tabular-nums; }
+
+/* Labeled field: name + control. */
+.field { display: flex; align-items: center; gap: 7px; }
+.slider .name, .field .name { min-width: 44px; }
+
+/* Segmented buttons (opacity). */
+.seg { display: flex; padding: 2px; gap: 2px; border-radius: 7px; background: rgba(255, 255, 255, .08); }
+#controls .seg button { padding: 1px 8px; background: transparent; color: rgba(255, 255, 255, .7); }
+#controls .seg button:hover { background: rgba(255, 255, 255, .14); }
+#controls .seg button.sel { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+
+/* Accent swatches. */
+.swatches { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+#controls .swatches button {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25);
+  transition: transform .1s;
+}
+#controls .swatches button:hover { background: var(--c); transform: scale(1.3); }
+#controls .swatches button.sel { box-shadow: 0 0 0 1.5px rgba(12, 12, 16, 1), 0 0 0 2.5px #fff; }
+
+/* Dropdown (HTML, not <select>: native popups misbehave in a window that never takes focus). */
+.dropdown { display: flex; align-items: center; gap: 7px; }
+#controls .dd-btn { display: flex; align-items: center; gap: 5px; padding-right: 6px; }
+.dd-btn svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.dd-menu {
+  position: fixed; /* placed by JS so the scrolling controls panel doesn't clip it */
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 96px;
+  padding: 3px;
+  background: rgba(30, 30, 36, .98);
+  border-radius: 7px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .5);
+}
+.dd-menu[hidden] { display: none; }
+#controls .dd-menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  background: transparent;
+  padding: 3px 8px;
+}
+#controls .dd-menu button:hover { background: rgba(255, 255, 255, .14); }
+#controls .dd-menu button.sel { color: var(--accent); }
+.dd-menu small { font-size: 10px; color: rgba(255, 255, 255, .45); }
+
 /* Checkboxes: rounded square, accent fill with a drawn check mark. */
 .check {
   display: flex;
@@ -220,7 +410,7 @@ html, body {
   width: 3.5px;
   height: 7px;
   margin-top: -1.5px;
-  border: solid #0b0b0d;
+  border: solid var(--on-accent);
   border-width: 0 1.8px 1.8px 0;
   transform: rotate(45deg) scale(0);
   transition: transform .12s ease-out;
@@ -229,8 +419,8 @@ html, body {
 .check input:checked::after { transform: rotate(45deg) scale(1); }
 .check input:focus-visible { outline: 2px solid rgba(255, 255, 255, .6); outline-offset: 1px; }
 #drag {
-  flex: 1 1 auto; /* empty space in the bar doubles as a move handle */
-  min-width: 14px;
+  flex: none;
+  padding: 1px 0 2px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -246,7 +436,7 @@ html, body {
   height: 22px;
   display: none;
   cursor: nwse-resize;
-  background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, .45) 50%, rgba(255, 255, 255, .45) 60%, transparent 60%, transparent 72%, rgba(255, 255, 255, .45) 72%, rgba(255, 255, 255, .45) 82%, transparent 82%);
+  background: linear-gradient(135deg, transparent 50%, var(--grip) 50%, var(--grip) 60%, transparent 60%, transparent 72%, var(--grip) 72%, var(--grip) 82%, transparent 82%);
   border-bottom-right-radius: var(--radius);
   z-index: 2;
 }
@@ -255,4 +445,4 @@ html, body {
 #app.open .edge { display: block; }
 .edge[data-dir="SouthEast"], .edge[data-dir="NorthWest"] { cursor: nwse-resize; }
 .edge[data-dir="SouthWest"], .edge[data-dir="NorthEast"] { cursor: nesw-resize; }
-#app.open #panel { outline: 1px solid rgba(255, 255, 255, .18); }
+#app.open #panel { outline: 1px solid var(--outline); }

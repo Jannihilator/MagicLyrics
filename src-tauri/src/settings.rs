@@ -10,8 +10,12 @@ pub struct Settings {
     pub show_play_pause: bool,
     pub show_title: bool,
     pub font_size: u32,
-    /// Player to prefer when several are active (substring of the app id).
-    pub preferred_app: String,
+    /// "auto" (follow what's behind the overlay), "dark" or "light".
+    pub theme: String,
+    /// Panel background opacity: "low" (20%), "medium" (80%) or "high" (100%).
+    pub panel_opacity: String,
+    /// Accent color of the controls, "#rrggbb".
+    pub accent: String,
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub width: Option<u32>,
@@ -28,7 +32,9 @@ impl Default for Settings {
             show_play_pause: true,
             show_title: true,
             font_size: 18,
-            preferred_app: "spotify".into(),
+            theme: "auto".into(),
+            panel_opacity: "medium".into(),
+            accent: "#1ed760".into(),
             x: None,
             y: None,
             width: None,

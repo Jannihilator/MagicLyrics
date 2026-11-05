@@ -26,14 +26,61 @@
     </button>
 
     <div id="controls">
-      <div id="drag" title="Drag to move">⠿ <span id="meta"></span></div>
-      <label class="check" title="Show album art"><input type="checkbox" id="optArt" />Art</label>
-      <label class="check" title="Show song title and artist"><input type="checkbox" id="optTitle" />Title</label>
-      <label class="check" title="Show play/pause button"><input type="checkbox" id="optPP" />Play</label>
-      <button id="fontDown" title="Smaller text">A−</button>
-      <button id="fontUp" title="Larger text">A+</button>
-      <button id="refetch" title="Search lyrics again">↻</button>
-      <button id="quit" title="Quit MagicLyrics">✕</button>
+      <div id="drag" title="Drag to move">⠿ Move <span id="meta"></span></div>
+      <section class="group">
+        <h3>Elements</h3>
+        <div class="items">
+          <label class="check" title="Show album art"><input type="checkbox" id="optArt" />Art</label>
+          <label class="check" title="Show song title and artist"><input type="checkbox" id="optTitle" />Title</label>
+          <label class="check" title="Show play/pause button"><input type="checkbox" id="optPP" />Play</label>
+        </div>
+      </section>
+      <section class="group">
+        <h3>Display</h3>
+        <div class="items">
+          <label class="slider" title="Text size">
+            <span class="name">Size</span>
+            <span class="track"><input type="range" id="fontSize" min="12" max="36" step="2" /><span class="ticks"></span></span>
+            <output id="fontSizeVal"></output>
+          </label>
+          <div class="field" title="Background opacity">
+            <span class="name">Opacity</span>
+            <div class="seg" id="opacity">
+              <button data-v="low" title="20%">Low</button>
+              <button data-v="medium" title="80%">Medium</button>
+              <button data-v="high" title="100%">High</button>
+            </div>
+          </div>
+          <div class="dropdown" title="Light or dark panel">
+            <span class="name">Theme</span>
+            <button id="themeBtn" class="dd-btn"><span id="themeLabel"></span><svg viewBox="0 0 10 10"><path d="M2 3.5l3 3 3-3"/></svg></button>
+            <div id="themeMenu" class="dd-menu" hidden>
+              <button data-v="auto">Auto<small>match background</small></button>
+              <button data-v="light">Light</button>
+              <button data-v="dark">Dark</button>
+            </div>
+          </div>
+          <div class="field" title="Highlight color">
+            <span class="name">Color</span>
+            <div class="swatches" id="accent"></div>
+          </div>
+        </div>
+      </section>
+      <section class="group">
+        <h3>App</h3>
+        <div class="items">
+          <button id="sync" title="Fix lyrics timing: click the line you hear">⇅ Sync lyrics</button>
+          <button id="refetch" title="Search lyrics for this song again">↻ Re-search</button>
+          <button id="quit" title="Quit MagicLyrics">✕ Quit</button>
+        </div>
+      </section>
+    </div>
+    <!-- Shown while syncing: lyrics are frozen and scrollable; click the line you hear. -->
+    <div id="syncbar">
+      <span id="syncHint">Click the line you hear</span>
+      <span id="syncOffset"></span>
+      <button id="syncReset" title="Remove the timing correction">Reset</button>
+      <button id="syncDone" class="primary">Done</button>
     </div>
     <div id="grip" title="Drag to resize"></div>
     <!-- Edge zones (controls open only): every edge resizes width and height together. -->
