@@ -2,10 +2,8 @@ name: Build macOS
 
 on:
   push:
-    branches: [main]        # every push to main -> .dmg under the run's Artifacts
-    tags: ["v*"]            # pushing a tag like v0.1.1 also publishes a GitHub Release
-  pull_request:
-  workflow_dispatch:        # "Run workflow" button on the Actions tab
+    tags: ["v*"]            # pushing a tag like v0.1.2 builds and publishes a GitHub Release
+  workflow_dispatch:        # "Run workflow" button on the Actions tab (test build, no Release)
 
 permissions:
   contents: write           # needed to create the Release on tag pushes

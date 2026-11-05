@@ -61,7 +61,7 @@ Set `MAGICLYRICS_DEBUG=1` to log each lyrics provider's result to stderr.
 
 Tauri can't build Mac apps on Windows; build on a Mac or with GitHub Actions.
 
-- **GitHub Actions:** `.github/workflows/build-macos.yml` runs on every push to `main` (and on PRs / *Run workflow*); download the `.dmg` from the run's *Artifacts*. Pushing a `v*` tag (e.g. `git tag v0.1.1 && git push origin v0.1.1`) also publishes it as a GitHub Release.
+- **GitHub Actions:** `.github/workflows/build-macos.yml` runs when you push a `v*` tag (e.g. `git tag v0.1.2 && git push origin v0.1.2`) and publishes the `.dmg` as a GitHub Release. For a test build without a release, use Actions tab → *Build macOS* → *Run workflow* and download the `.dmg` from the run's *Artifacts*.
 - **On a Mac:** needs Xcode Command Line Tools, Rust (`rustup target add aarch64-apple-darwin x86_64-apple-darwin`), Node and `brew install cmake`.
 
   ```bash
