@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-hit-rects"
+description = "Enables the set_hit_rects command without any pre-configured scope."
+commands.allow = ["set_hit_rects"]
+
+[[permission]]
+identifier = "deny-set-hit-rects"
+description = "Denies the set_hit_rects command without any pre-configured scope."
+commands.deny = ["set_hit_rects"]

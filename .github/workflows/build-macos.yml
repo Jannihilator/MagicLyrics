@@ -1,0 +1,37 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:        # "Run workflow" button on the Actions tab
+  push:
+    tags: ["v*"]            # or push a tag like v0.2.0
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - run: npm ci
+
+      - name: Build mediaremote-adapter
+        run: bash scripts/fetch-mediaremote-adapter.sh
+
+      - name: Unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build universal app (Apple Silicon + Intel)
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MagicLyrics-macOS
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error

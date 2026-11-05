@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MagicLyrics</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app" class="idle">
+    <div id="panel">
+      <div id="side">
+        <img id="art" alt="" />
+        <div id="song"><div id="songTitle"></div><div id="songArtist"></div></div>
+        <button id="pp" class="round" title="Play / Pause" aria-label="Play / Pause"></button>
+      </div>
+      <div id="viewport">
+        <div id="lines"></div>
+        <div id="status"></div>
+      </div>
+    </div>
+
+    <!-- The only part of the window that accepts clicks while controls are hidden. -->
+    <button id="handle" title="Click: controls · Drag: move" aria-label="Show controls">
+      <svg viewBox="0 0 16 16"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+    </button>
+
+    <div id="controls">
+      <div id="drag" title="Drag to move">⠿ <span id="meta"></span></div>
+      <label class="check" title="Show album art"><input type="checkbox" id="optArt" />Art</label>
+      <label class="check" title="Show song title and artist"><input type="checkbox" id="optTitle" />Title</label>
+      <label class="check" title="Show play/pause button"><input type="checkbox" id="optPP" />Play</label>
+      <button id="fontDown" title="Smaller text">A−</button>
+      <button id="fontUp" title="Larger text">A+</button>
+      <button id="refetch" title="Search lyrics again">↻</button>
+      <button id="quit" title="Quit MagicLyrics">✕</button>
+    </div>
+    <div id="grip" title="Drag to resize"></div>
+    <!-- Edge zones (controls open only): every edge resizes width and height together. -->
+    <div class="edge" data-dir="SouthWest" style="left:0;top:0;bottom:22px;width:12px"></div>
+    <div class="edge" data-dir="SouthEast" style="right:0;top:30px;bottom:22px;width:12px"></div>
+    <div class="edge" data-dir="NorthEast" style="left:12px;right:34px;top:0;height:6px"></div>
+    <div class="edge" data-dir="SouthEast" style="left:0;right:22px;bottom:0;height:12px"></div>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>

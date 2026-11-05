@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "resources": {
+      "macos/mediaremote-adapter.pl": "mediaremote-adapter.pl"
+    },
+    "macOS": {
+      "frameworks": [
+        "macos/MediaRemoteAdapter.framework"
+      ],
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

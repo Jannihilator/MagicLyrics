@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toggle-play-pause"
+description = "Enables the toggle_play_pause command without any pre-configured scope."
+commands.allow = ["toggle_play_pause"]
+
+[[permission]]
+identifier = "deny-toggle-play-pause"
+description = "Denies the toggle_play_pause command without any pre-configured scope."
+commands.deny = ["toggle_play_pause"]
