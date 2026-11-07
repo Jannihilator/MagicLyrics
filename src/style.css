@@ -229,6 +229,19 @@ html, body {
 }
 #handle svg { width: 12px; height: 12px; fill: currentColor; }
 #handle:hover, #app.open #handle { opacity: 1; background: var(--soft-hover); color: var(--fg); }
+/* Accent dot on the handle while an update is waiting. */
+#app.has-update #handle { opacity: 1; }
+#app.has-update #handle::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1.5px rgba(12, 12, 16, .9);
+}
 
 /* ---------- controls ---------- */
 #controls {
@@ -277,6 +290,8 @@ html, body {
   white-space: nowrap;
 }
 #controls button:hover { background: rgba(255, 255, 255, .25); }
+#controls button.primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+#controls button.primary:hover { filter: brightness(1.1); }
 
 /* Sections: small caps label on the left, items wrap on the right. */
 .group { display: flex; align-items: flex-start; gap: 8px; }

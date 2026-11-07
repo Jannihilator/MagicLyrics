@@ -34,13 +34,26 @@ jobs:
       - name: Unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      # tauri.updater.conf.json adds a signed update file next to each installer.
+      # Without the signing secret (forks, manual test runs) build without it.
       - name: Build installer
-        run: npm run tauri build
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npm run tauri build -- --config src-tauri/tauri.updater.conf.json
+          else
+            npm run tauri build
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: MagicLyrics-Windows
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
           if-no-files-found: error
 
   macos:
@@ -70,12 +83,23 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Build universal app (Apple Silicon + Intel)
-        run: npm run tauri build -- --target universal-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npm run tauri build -- --target universal-apple-darwin --config src-tauri/tauri.updater.conf.json
+          else
+            npm run tauri build -- --target universal-apple-darwin
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: MagicLyrics-macOS
-          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
 
   # One job publishes both files, so the two builds never race to create the Release.
@@ -93,10 +117,34 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Universal macOS bundles have no version in the name; add it so each release's files are distinct.
+      - name: Name the macOS update file
+        working-directory: dist
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mv MagicLyrics.app.tar.gz "MagicLyrics_${v}_universal.app.tar.gz"
+          mv MagicLyrics.app.tar.gz.sig "MagicLyrics_${v}_universal.app.tar.gz.sig"
+
+      # The app reads this from releases/latest to find, download and verify updates.
+      - name: Updater manifest (latest.json)
+        working-directory: dist
+        env:
+          BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          exe=$(ls *.exe)
+          mac="MagicLyrics_${v}_universal.app.tar.gz"
+          jq -n             --arg v "$v"             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             --arg notes "See ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"             --arg win_url "$BASE/$exe" --rawfile win_sig "$exe.sig"             --arg mac_url "$BASE/$mac" --rawfile mac_sig "$mac.sig"             '{version: $v, notes: $notes, pub_date: $date, platforms: {
+              "windows-x86_64": {url: $win_url, signature: $win_sig},
+              "darwin-aarch64": {url: $mac_url, signature: $mac_sig},
+              "darwin-x86_64":  {url: $mac_url, signature: $mac_sig}
+            }}' > latest.json
+          cat latest.json
+
       - name: SHA-256 checksums
         working-directory: dist
         run: |
-          sha256sum *.exe *.dmg > SHA256SUMS.txt
+          sha256sum *.exe *.dmg *.app.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       # Signed proof that each file was built by this workflow from this commit.
@@ -107,6 +155,7 @@ jobs:
           subject-path: |
             dist/*.exe
             dist/*.dmg
+            dist/*.app.tar.gz
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -114,6 +163,9 @@ jobs:
           files: |
             dist/*.exe
             dist/*.dmg
+            dist/*.app.tar.gz
+            dist/*.sig
+            dist/latest.json
             dist/SHA256SUMS.txt
           generate_release_notes: true
           body: |

@@ -11,6 +11,7 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 - Controls: move (drag the title), resize (corner grip), toggle album art / title / play-pause, text size, opacity, theme (auto / light / dark), color, sync lyrics, re-search lyrics, quit
 - Tray icon (Windows) / menu-bar icon (macOS) to hide/show the overlay or quit
 - Remembers window position, size and toggles; caches lyrics on disk so known songs work offline
+- Updates itself: a dot on the handle when a new version is out, then **Update** in the controls (or the tray menu) downloads, installs and restarts
 
 ## Least privilege
 
@@ -18,7 +19,8 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 - The UI can only call MagicLyrics' own commands plus window drag/resize (`src-tauri/capabilities/default.json`); no filesystem, shell or HTTP access from the web layer. Strict CSP.
 - Click-through is done by polling the cursor position — no global mouse/keyboard hooks.
 - Auto light/dark (Windows): twice a second it averages the brightness of a thin strip of screen pixels just outside the overlay's edges. Only one number is kept; nothing is saved or sent. Not available on macOS.
-- Network: only HTTPS GETs to the lyrics sites below.
+- Network: only HTTPS GETs to the lyrics sites below, plus GitHub Releases to check for updates (at launch and every 6 hours).
+- Updates are only installed if they are signed with the project's update key (public key in `src-tauri/tauri.conf.json`). The web layer can't trigger anything but the app's own check/install commands.
 
 ## Install
 
@@ -26,6 +28,10 @@ Download the latest build from [Releases](https://github.com/Jannihilator/MagicL
 
 - **Windows:** `MagicLyrics_x.y.z_x64-setup.exe`. Windows 10/11 (WebView2 is preinstalled on 11). The installer isn't code-signed, so SmartScreen may warn: *More info* → *Run anyway*.
 - **macOS:** `MagicLyrics_x.y.z_universal.dmg` (Apple Silicon + Intel). The app is ad-hoc signed, not notarized. First launch: open the app, then System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/MagicLyrics.app`).
+
+### Updating
+
+From v0.2.4 on, MagicLyrics checks for new versions by itself. When one is out, a dot appears on the `···` handle; open the controls and click **Update to vX.Y.Z** (or use *Install Update* in the tray / menu-bar menu). It downloads, checks the signature, installs and restarts. You can also click **Check for updates** any time. Versions before v0.2.4 have to be updated once by downloading from Releases.
 
 ## Is this safe?
 
@@ -59,6 +65,18 @@ MagicLyrics is open source, and you don't have to take anyone's word for what's 
 Time-synced lyrics are preferred over plain text from any source. Plain lyrics scroll proportionally through the song.
 
 > As of 2026-11, `mojim.com`'s public DNS points at a private address, so Mojim is unreachable and Chinese songs fall back to LRCLIB. The Mojim parser is in place and will be used automatically if the site comes back.
+
+## Releasing
+
+Push a tag like `v0.2.4` (after bumping the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`). The workflow builds both platforms and publishes a Release with the installers, signed update files (`*.sig`, `*.app.tar.gz`) and `latest.json`, which installed apps read to find the update.
+
+Update signing needs a key pair (separate from Apple/Microsoft code signing). Set up once:
+
+1. `npx tauri signer generate -w $HOME/.tauri/magiclyrics.key` (choose a password; in PowerShell use `$HOME`, since `~` is not expanded for npx).
+2. Put the contents of `~/.tauri/magiclyrics.key.pub` in `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`.
+3. In the repo's *Settings → Secrets and variables → Actions*, add `TAURI_SIGNING_PRIVATE_KEY` (contents of `~/.tauri/magiclyrics.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+Keep a backup of the private key and password. If they're lost, installed copies can't verify new updates and everyone has to reinstall manually. Local `npm run tauri build` doesn't need the key; only CI adds the update files (`--config src-tauri/tauri.updater.conf.json`).
 
 ## Extending
 

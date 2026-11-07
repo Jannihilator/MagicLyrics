@@ -455,6 +455,34 @@ themeMenu.addEventListener("click", async (e) => {
 document.addEventListener("click", () => setMenuOpen(false));
 $("controls").addEventListener("scroll", () => setMenuOpen(false));
 
+// ------------------------------------------------------------------ updates
+// The Rust side checks GitHub in the background and owns the status; this only shows it.
+
+let update = { state: "idle", current: "", available: null, progress: null, error: null };
+let upToDateTimer = 0;
+function renderUpdate(u) {
+  update = u;
+  const btn = $("update");
+  const pct = u.progress != null ? ` ${Math.round(u.progress * 100)}%` : "";
+  const [text, title] = {
+    checking: ["⬆ Checking…", "Looking for a newer version"],
+    upToDate: ["✓ Up to date", `v${u.current} is the latest version`],
+    available: [`⬆ Update to v${u.available}`, `Download and install v${u.available}, then restart (now v${u.current})`],
+    downloading: [`⬆ Updating…${pct}`, "Downloading the update; the app restarts when done"],
+    error: ["⬆ Update failed — retry", `Couldn't update: ${u.error || "unknown error"}`],
+  }[u.state] || ["⬆ Check for updates", `Check for a newer version (now v${u.current})`];
+  btn.textContent = text;
+  btn.title = title;
+  btn.disabled = u.state === "checking" || u.state === "downloading";
+  btn.classList.toggle("primary", u.state === "available");
+  app.classList.toggle("has-update", u.state === "available");
+  // "Up to date" is a passing confirmation, not a permanent label.
+  clearTimeout(upToDateTimer);
+  if (u.state === "upToDate") upToDateTimer = setTimeout(() => renderUpdate({ ...update, state: "idle" }), 4000);
+}
+$("update").addEventListener("click", () =>
+  invoke(update.state === "available" ? "install_update" : "check_update"));
+
 $("refetch").addEventListener("click", () => invoke("refetch_lyrics"));
 $("quit").addEventListener("click", () => invoke("quit"));
 $("drag").addEventListener("mousedown", (e) => e.button === 0 && appWindow.startDragging());
@@ -494,6 +522,8 @@ async function init() {
   renderLyrics();
   renderPlayButton();
 
+  renderUpdate(await invoke("get_update_status"));
+  await listen("update", (e) => renderUpdate(e.payload));
   await listen("track", (e) => setTrack(e.payload));
   await listen("backdrop", (e) => { state.backdropLuma = e.payload; applyTone(); });
   await listen("art", (e) => { art.src = e.payload; });

@@ -1,6 +1,6 @@
 [package]
 name = "magiclyrics"
-version = "0.2.3"
+version = "0.2.4"
 description = "Floating, click-through lyrics overlay for the currently playing song"
 edition = "2021"
 
@@ -20,6 +20,8 @@ urlencoding = "2"
 regex = "1"
 base64 = "0.22"
 zhconv = "0.3"
+tauri-plugin-updater = "2"
+tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-app-commands"
 description = "MagicLyrics' own commands used by the overlay UI."
-commands.allow = ["get_state", "get_settings", "update_settings", "toggle_play_pause", "set_controls_open", "set_hit_rects", "refetch_lyrics", "set_lyrics_offset", "quit"]
+commands.allow = ["get_state", "get_settings", "update_settings", "toggle_play_pause", "set_controls_open", "set_hit_rects", "refetch_lyrics", "set_lyrics_offset", "get_update_status", "check_update", "install_update", "quit"]

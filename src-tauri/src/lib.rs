@@ -3,6 +3,7 @@ mod lyrics;
 mod media;
 mod overlay;
 mod settings;
+mod updater;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use cache::{Cached, LyricsCache};
@@ -164,10 +165,14 @@ fn quit(app: AppHandle) {
     save_and_exit(&app);
 }
 
-fn save_and_exit(app: &AppHandle) {
+fn save_settings(app: &AppHandle) {
     let st = app.state::<AppState>();
     let s = st.settings.lock().unwrap().clone();
     settings::save(&st.settings_path, &s);
+}
+
+fn save_and_exit(app: &AppHandle) {
+    save_settings(app);
     app.exit(0);
 }
 
@@ -180,9 +185,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
 
     let toggle = MenuItem::with_id(app, "toggle", "Hide Lyrics", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", "Check for Updates…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit MagicLyrics", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&toggle, &sep, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &sep, &update, &quit])?;
+    app.state::<updater::Updates>().set_tray_item(update);
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("MagicLyrics")
@@ -197,6 +204,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = toggle.set_text(if visible { "Show Lyrics" } else { "Hide Lyrics" });
                 }
             }
+            "update" => updater::on_tray_click(app),
             "quit" => save_and_exit(app),
             _ => {}
         });
@@ -392,6 +400,7 @@ fn restore_geometry(win: &WebviewWindow, s: &Settings) -> bool {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // macOS: no Dock icon or app menu, like a menu-bar utility.
             #[cfg(target_os = "macos")]
@@ -432,6 +441,7 @@ pub fn run() {
                 http: lyrics::http_client(),
                 cache,
             });
+            app.manage(updater::Updates::new(app.package_info().version.to_string()));
 
             build_tray(app)?;
             overlay::harden(&win);
@@ -440,6 +450,7 @@ pub fn run() {
 
             overlay::spawn_hit_tester(app.handle().clone());
             spawn_media_worker(app.handle().clone(), rx);
+            updater::spawn_background_checks(app.handle().clone());
             Ok(())
         })
         .on_window_event(|win, ev| {
@@ -471,6 +482,9 @@ pub fn run() {
             set_hit_rects,
             refetch_lyrics,
             set_lyrics_offset,
+            updater::get_update_status,
+            updater::check_update,
+            updater::install_update,
             quit
         ])
         .run(tauri::generate_context!())
