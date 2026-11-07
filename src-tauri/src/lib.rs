@@ -260,6 +260,48 @@ fn start_lyrics(app: &AppHandle, track: Track) {
 
 // ---------------------------------------------------------------- media worker
 
+/// Album-art fetch attempts per track (one per ~500 ms poll).
+const ART_TRIES: u32 = 8;
+
+/// Fingerprint of a track's album art, used to spot art left over from the previous song.
+#[derive(Debug, PartialEq)]
+struct ArtId {
+    hash: u64,
+    album: String,
+}
+
+impl ArtId {
+    fn new(bytes: &[u8], album: &str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut h);
+        Self { hash: h.finish(), album: album.to_string() }
+    }
+
+    /// Different art from the previous track, or the same art on the same album.
+    fn is_fresh(&self, prev: Option<&ArtId>) -> bool {
+        match prev {
+            Some(p) if p.hash == self.hash => !self.album.is_empty() && p.album == self.album,
+            _ => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod art_tests {
+    use super::ArtId;
+
+    #[test]
+    fn rejects_leftover_art_from_previous_song() {
+        let prev = ArtId::new(b"cover-a", "Album A");
+        assert!(ArtId::new(b"cover-a", "Album A").is_fresh(Some(&prev)), "same album keeps its art");
+        assert!(!ArtId::new(b"cover-a", "Album B").is_fresh(Some(&prev)), "other album, old art");
+        assert!(!ArtId::new(b"cover-a", "").is_fresh(Some(&prev)), "unknown album, old art");
+        assert!(ArtId::new(b"cover-b", "Album B").is_fresh(Some(&prev)));
+        assert!(ArtId::new(b"cover-a", "Album B").is_fresh(None));
+    }
+}
+
 fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>) {
     std::thread::spawn(move || {
         media::init_thread();
@@ -268,7 +310,9 @@ fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>) {
         let mut stable_polls = 0u32;
         let mut lyrics_started = false;
         let mut art_tries = 0u32;
-        let mut have_art = false;
+        // Art shown for the current track, and for the last track that had art.
+        let mut cur_art: Option<ArtId> = None;
+        let mut prev_art: Option<ArtId> = None;
         let mut last: Option<(bool, u64, Instant)> = None;
 
         loop {
@@ -292,7 +336,9 @@ fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>) {
                 stable_polls = 0;
                 lyrics_started = false;
                 art_tries = 0;
-                have_art = false;
+                if let Some(a) = cur_art.take() {
+                    prev_art = Some(a);
+                }
                 last = None;
                 let track = snap.as_ref().map(|s| s.track.clone());
                 {
@@ -319,13 +365,19 @@ fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>) {
                 start_lyrics(&app, s.track.clone());
             }
 
-            if !have_art && art_tries < 8 {
+            // Players often report the new title before the new artwork, so the first
+            // fetch can still return the previous song's art. Skip that and retry; if it
+            // never changes, show nothing rather than the wrong cover.
+            if cur_art.is_none() && art_tries < ART_TRIES {
                 art_tries += 1;
                 if let Some((bytes, mime)) = src.album_art() {
-                    have_art = true;
-                    let url = format!("data:{mime};base64,{}", B64.encode(bytes));
-                    st.ui.lock().unwrap().art = Some(url.clone());
-                    let _ = app.emit("art", url);
+                    let id = ArtId::new(&bytes, &s.track.album);
+                    if id.is_fresh(prev_art.as_ref()) {
+                        cur_art = Some(id);
+                        let url = format!("data:{mime};base64,{}", B64.encode(bytes));
+                        st.ui.lock().unwrap().art = Some(url.clone());
+                        let _ = app.emit("art", url);
+                    }
                 }
             }
 
