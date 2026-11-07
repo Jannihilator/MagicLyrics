@@ -57,14 +57,13 @@ MagicLyrics is open source, and you don't have to take anyone's word for what's 
 | Now playing (macOS) | System **Now Playing** info via [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3, bundled) | Same data as Control Center, for any app. Since macOS 15.4 only Apple-signed processes may read it, so the adapter runs inside `/usr/bin/perl`. Unofficial: a macOS update could break it. |
 | Now playing (Windows) | Windows **System Media Transport Controls** | Same data as the volume flyout. No Spotify login, no API key, no network. Works for any player that reports to Windows. |
 | Browser media (YouTube, YouTube Music…) | Song detector in `src-tauri/src/media/browser.rs` | Browsers report the video title and channel name. Non-songs (vlogs, podcasts, trailers, streams, very short/long videos) are skipped; for songs, artist and title are recovered from `Artist - Song (Official Video)`, `Artist【Song】MV`, `Artist - Topic` / `…VEVO` channels. Bilingual titles (`告白氣球 Love Confession`) are also searched as Chinese-only and English-only. |
-| Lyrics (Chinese) | **Mojim 魔鏡歌詞網** (Taiwan) → **LRCLIB** | Simplified results are converted to Traditional |
+| Lyrics (Chinese) | **LRCLIB** | Simplified results are converted to Traditional |
 | Lyrics (other) | **LRCLIB** → **lyrics.ovh** | LRCLIB has the best free time-synced data |
 | Cache | Windows `%LOCALAPPDATA%\app.magiclyrics.overlay\lyrics\` · macOS `~/Library/Caches/app.magiclyrics.overlay/` | Hits kept forever; misses retried after 24 h |
 | Settings | Windows `%APPDATA%\app.magiclyrics.overlay\settings.json` · macOS `~/Library/Application Support/app.magiclyrics.overlay/` | |
 
 Time-synced lyrics are preferred over plain text from any source. Plain lyrics scroll proportionally through the song.
 
-> As of 2026-11, `mojim.com`'s public DNS points at a private address, so Mojim is unreachable and Chinese songs fall back to LRCLIB. The Mojim parser is in place and will be used automatically if the site comes back.
 
 ## Releasing
 

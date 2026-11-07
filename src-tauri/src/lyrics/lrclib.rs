@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 const SOURCE: &str = "LRCLIB";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Record {
     track_name: Option<String>,
@@ -69,29 +69,60 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
         }
     }
 
-    // 2) Search with cleaned title + primary artist, pick the closest match.
+    // 2) Search with cleaned title + primary artist, pick the closest match. If that
+    //    finds nothing usable (the player's artist spelling often differs from
+    //    LRCLIB's: Simplified vs Traditional, English name), search by title alone and
+    //    accept an artist mismatch only when the duration is a near-exact match.
     let title = q.clean_title();
     let artist = q.primary_artist();
+    let mut best = pick(&search(client, &title, Some(&artist)).await?, q, &title, &artist, false);
+    if best.is_none() && dur_s > 0 {
+        best = pick(&search(client, &title, None).await?, q, &title, &artist, true);
+    }
+    let found = best.and_then(|r| to_lyrics(&r));
+    Ok(match (found, exact_plain) {
+        (Some(f), _) if f.synced => Some(f),
+        (_, Some(e)) => Some(e),
+        (f, None) => f,
+    })
+}
+
+async fn search(client: &Client, title: &str, artist: Option<&str>) -> Result<Vec<Record>, String> {
+    let mut params = vec![("track_name", title)];
+    if let Some(a) = artist {
+        params.push(("artist_name", a));
+    }
     let resp = client
         .get("https://lrclib.net/api/search")
-        .query(&[("track_name", title.as_str()), ("artist_name", artist.as_str())])
+        .query(&params)
         .send()
         .await
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("search: HTTP {}", resp.status()));
     }
-    let records: Vec<Record> = resp.json().await.map_err(|e| e.to_string())?;
+    resp.json().await.map_err(|e| e.to_string())
+}
 
-    let want_title = normalize(&title);
-    let want_artist = normalize(&artist);
+/// Normalize for comparison, folding Simplified Chinese into Traditional.
+fn norm(s: &str) -> String {
+    normalize(&zhconv::zhconv(s, zhconv::Variant::ZhHant))
+}
+
+/// Best-scoring record. With `loose_artist`, a non-matching artist is allowed but
+/// the duration must be within 3 s.
+fn pick(records: &[Record], q: &Query, title: &str, artist: &str, loose_artist: bool) -> Option<Record> {
+    let dur_s = q.duration_ms / 1000;
+    let want_title = norm(title);
+    let want_artist = norm(artist);
     let score = |r: &Record| -> Option<i64> {
-        let t = normalize(&super::clean_title(r.track_name.as_deref().unwrap_or("")));
-        let a = normalize(r.artist_name.as_deref().unwrap_or(""));
+        let t = norm(&super::clean_title(r.track_name.as_deref().unwrap_or("")));
+        let a = norm(r.artist_name.as_deref().unwrap_or(""));
         if t != want_title && !t.contains(&want_title) && !want_title.contains(&t) {
             return None;
         }
-        if !want_artist.is_empty() && !a.contains(&want_artist) && !want_artist.contains(&a) {
+        let artist_ok = want_artist.is_empty() || a.contains(&want_artist) || want_artist.contains(&a);
+        if !artist_ok && !loose_artist {
             return None;
         }
         if !variant_ok(r.track_name.as_deref().unwrap_or(""), &q.title) {
@@ -100,10 +131,13 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
         let mut s = 0i64;
         if dur_s > 0 {
             let d = (r.duration.unwrap_or(0.0) - dur_s as f64).abs();
-            if d > 20.0 {
+            if d > if artist_ok { 20.0 } else { 3.0 } {
                 return None;
             }
             s -= (d * 10.0) as i64;
+        }
+        if artist_ok {
+            s += 500;
         }
         if r.synced_lyrics.is_some() {
             s += 1000;
@@ -113,15 +147,9 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
         }
         Some(s)
     };
-    let best = records
+    records
         .iter()
         .filter_map(|r| score(r).map(|s| (s, r)))
         .max_by_key(|(s, _)| *s)
-        .map(|(_, r)| r);
-    let found = best.and_then(to_lyrics);
-    Ok(match (found, exact_plain) {
-        (Some(f), _) if f.synced => Some(f),
-        (_, Some(e)) => Some(e),
-        (f, None) => f,
-    })
+        .map(|(_, r)| r.clone())
 }

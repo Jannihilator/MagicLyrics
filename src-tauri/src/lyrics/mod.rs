@@ -1,6 +1,6 @@
 //! Lyrics lookup: an ordered chain of providers plus an on-disk cache.
 //!
-//! - Chinese songs: Mojim (Taiwanese) -> LRCLIB
+//! - Chinese songs: LRCLIB
 //! - Everything else: LRCLIB -> lyrics.ovh
 //!
 //! Time-synced lyrics win over plain ones; if no provider has synced lyrics the
@@ -10,7 +10,6 @@
 mod lrc;
 mod lrclib;
 mod lyricsovh;
-mod mojim;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -131,7 +130,6 @@ pub fn is_chinese(s: &str) -> bool {
 
 #[derive(Clone, Copy, Debug)]
 enum Provider {
-    Mojim,
     Lrclib,
     LyricsOvh,
 }
@@ -146,7 +144,6 @@ pub enum Outcome {
 
 async fn fetch(p: Provider, client: &Client, q: &Query) -> Result<Option<Lyrics>, String> {
     match p {
-        Provider::Mojim => mojim::fetch(client, q).await,
         Provider::Lrclib => lrclib::fetch(client, q).await,
         Provider::LyricsOvh => lyricsovh::fetch(client, q).await,
     }
@@ -215,7 +212,7 @@ async fn find_one(
 ) -> Option<Lyrics> {
     let chinese = is_chinese(&q.title) || is_chinese(&q.artist);
     let order: &[Provider] = if chinese {
-        &[Provider::Mojim, Provider::Lrclib]
+        &[Provider::Lrclib]
     } else {
         &[Provider::Lrclib, Provider::LyricsOvh]
     };
@@ -320,6 +317,22 @@ mod tests {
                 assert!(!zhconv::is_hans(&all), "should be Traditional");
             }
             _ => panic!("not found"),
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_artist_spelling_mismatch() {
+        for (title, artist, secs) in [
+            ("寂寞邊界", "张栋梁", 271),
+            ("寂寞邊界", "Nicholas Teo", 271),
+            ("甲乙丙丁", "Jacky Cheung", 241),
+            ("甲乙丙丁", "郑中基", 244),
+        ] {
+            match live(title, artist, "", secs) {
+                Outcome::Found(l) => println!("{title}/{artist}: {} synced={}", l.source, l.synced),
+                _ => panic!("not found: {title} / {artist}"),
+            }
         }
     }
 
