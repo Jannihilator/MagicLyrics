@@ -248,8 +248,25 @@ html, body {
   background: rgba(12, 12, 16, .96);
   border-radius: 8px;
   z-index: 2;
+  container-type: inline-size;
+  transition: background-color .15s;
 }
 #app.open #controls { display: flex; }
+/* Narrow window: section labels go above their items so the controls get the full width. */
+@container (max-width: 300px) {
+  .group { flex-direction: column; gap: 2px; }
+  .group h3 { width: auto; padding-top: 2px; }
+  .group .items { width: 100%; }
+}
+/* While the size slider is in use, only the slider stays visible so the lyrics can be
+   seen at the new size underneath. */
+#app.peek #controls { visibility: hidden; background-color: transparent; }
+#app.peek #controls .slider {
+  visibility: visible;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgba(12, 12, 16, .9);
+}
 #controls button {
   border: 0;
   border-radius: 6px;
@@ -328,12 +345,14 @@ html, body {
 .slider output { min-width: 30px; color: var(--fg); font-variant-numeric: tabular-nums; }
 
 /* Labeled field: name + control. */
-.field { display: flex; align-items: center; gap: 7px; }
+/* Wraps the control under its name when the row is too narrow, then lets it shrink. */
+.field { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; min-width: 0; max-width: 100%; }
+.slider { max-width: 100%; }
 .slider .name, .field .name { min-width: 44px; }
 
-/* Segmented buttons (opacity). */
-.seg { display: flex; padding: 2px; gap: 2px; border-radius: 7px; background: rgba(255, 255, 255, .08); }
-#controls .seg button { padding: 1px 8px; background: transparent; color: rgba(255, 255, 255, .7); }
+/* Segmented buttons (opacity). Buttons shrink (with ellipsis) rather than get cut off. */
+.seg { display: flex; min-width: 0; max-width: 100%; padding: 2px; gap: 2px; border-radius: 7px; background: rgba(255, 255, 255, .08); }
+#controls .seg button { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 1px 8px; background: transparent; color: rgba(255, 255, 255, .7); }
 #controls .seg button:hover { background: rgba(255, 255, 255, .14); }
 #controls .seg button.sel { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 

@@ -401,7 +401,21 @@ $("optPP").addEventListener("change", async (e) =>
   applySettings(await invoke("update_settings", { showPlayPause: e.target.checked })));
 // Sliders preview live while dragging and save when released.
 initSlider($("fontSize"));
-$("fontSize").addEventListener("input", (e) => { applyFontSize(+e.target.value); tick(true); });
+$("fontSize").addEventListener("input", (e) => { applyFontSize(+e.target.value); tick(true); peek(); });
+// Peek: hide everything but the size slider while it's in use, so the lyrics show
+// at the new size. Ends shortly after release (or after the last key/wheel step).
+let peekHeld = false, peekTimer = 0;
+function peek() {
+  clearTimeout(peekTimer);
+  app.classList.add("peek");
+  if (!peekHeld) peekTimer = setTimeout(() => app.classList.remove("peek"), 800);
+}
+$("fontSize").addEventListener("pointerdown", () => { peekHeld = true; peek(); });
+for (const t of ["pointerup", "pointercancel"]) document.addEventListener(t, () => {
+  if (!peekHeld) return;
+  peekHeld = false;
+  peek();
+});
 $("fontSize").addEventListener("change", async (e) =>
   applySettings(await invoke("update_settings", { fontSize: +e.target.value })));
 $("opacity").addEventListener("click", async (e) => {
