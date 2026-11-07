@@ -192,6 +192,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "toggle" => {
                 if let Some(win) = app.get_webview_window("main") {
                     let visible = win.is_visible().unwrap_or(true);
+                    overlay::HIDDEN.store(visible, Ordering::Relaxed);
                     let _ = if visible { win.hide() } else { win.show() };
                     let _ = toggle.set_text(if visible { "Show Lyrics" } else { "Hide Lyrics" });
                 }

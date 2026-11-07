@@ -83,11 +83,30 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the Release
+      id-token: write       # sign the build attestations
+      attestations: write   # store them on GitHub
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      - name: SHA-256 checksums
+        working-directory: dist
+        run: |
+          sha256sum *.exe *.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # Signed proof that each file was built by this workflow from this commit.
+      # Anyone can check with: gh attestation verify <file> --repo <owner>/<repo>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.exe
+            dist/*.dmg
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -95,4 +114,11 @@ jobs:
           files: |
             dist/*.exe
             dist/*.dmg
+            dist/SHA256SUMS.txt
           generate_release_notes: true
+          body: |
+            Built by GitHub Actions from the tagged source code ([build log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})). Not code-signed, so Windows and macOS will warn on first launch; see [Is this safe?](${{ github.server_url }}/${{ github.repository }}#is-this-safe).
+
+            **Verify your download**
+            - Checksum: compare against `SHA256SUMS.txt` (Windows: `certutil -hashfile <file> SHA256`, macOS: `shasum -a 256 <file>`)
+            - Provenance: `gh attestation verify <file> --repo ${{ github.repository }}`

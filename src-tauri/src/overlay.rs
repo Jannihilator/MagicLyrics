@@ -9,7 +9,9 @@
 use crate::AppState;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+#[cfg(windows)]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 /// Physical pixels relative to the window's client area.
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
@@ -49,10 +51,14 @@ pub fn harden(win: &WebviewWindow) {
     let _ = win;
 }
 
+/// Set by the tray's Hide/Show so the macOS Space watchdog doesn't re-show a hidden overlay.
+pub static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(target_os = "macos")]
 mod macos {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
+    use std::ffi::{c_char, c_void};
     use tauri::WebviewWindow;
 
     // NSWindowCollectionBehavior bits.
@@ -60,22 +66,92 @@ mod macos {
     const STATIONARY: usize = 1 << 4;
     const IGNORES_CYCLE: usize = 1 << 6;
     const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
-    /// NSStatusWindowLevel: above normal and floating windows, including full-screen apps.
+    /// NSWindowStyleMaskNonactivatingPanel (only honoured by NSPanel).
+    const NONACTIVATING_PANEL: usize = 1 << 7;
+    /// NSStatusWindowLevel: above normal and floating windows and the menu bar.
     const STATUS_WINDOW_LEVEL: isize = 25;
 
-    /// Show on every Space, including other apps' full-screen Spaces. `alwaysOnTop` alone
-    /// (NSFloatingWindowLevel, no FullScreenAuxiliary) keeps the window out of those.
-    /// Needs the Accessory activation policy, which `run()` sets. Main thread only.
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn objc_allocateClassPair(superclass: *mut c_void, name: *const c_char, extra: usize) -> *mut c_void;
+        fn objc_registerClassPair(cls: *mut c_void);
+        fn class_addMethod(cls: *mut c_void, sel: *const c_void, imp: *const c_void, types: *const c_char) -> u8;
+        fn class_getInstanceSize(cls: *mut c_void) -> usize;
+        fn sel_registerName(name: *const c_char) -> *const c_void;
+        fn object_setClass(obj: *mut c_void, cls: *mut c_void) -> *mut c_void;
+    }
+
+    extern "C" fn no(_this: *mut c_void, _sel: *const c_void) -> u8 {
+        0
+    }
+
+    /// An NSPanel subclass that, like the window it replaces, never becomes key or main.
+    unsafe fn panel_class() -> *mut c_void {
+        let existing = objc_getClass(c"MagicLyricsPanel".as_ptr());
+        if !existing.is_null() {
+            return existing;
+        }
+        let ns_panel = objc_getClass(c"NSPanel".as_ptr());
+        let ns_window = objc_getClass(c"NSWindow".as_ptr());
+        // Swapping the class in place is only safe if NSPanel adds no instance storage.
+        if ns_panel.is_null() || class_getInstanceSize(ns_panel) != class_getInstanceSize(ns_window) {
+            return std::ptr::null_mut();
+        }
+        let cls = objc_allocateClassPair(ns_panel, c"MagicLyricsPanel".as_ptr(), 0);
+        if cls.is_null() {
+            return cls;
+        }
+        let types = if cfg!(target_arch = "aarch64") { c"B@:" } else { c"c@:" };
+        for sel in [c"canBecomeKeyWindow", c"canBecomeMainWindow"] {
+            class_addMethod(cls, sel_registerName(sel.as_ptr()), no as *const c_void, types.as_ptr());
+        }
+        objc_registerClassPair(cls);
+        cls
+    }
+
+    /// Show on every Space, including other apps' full-screen Spaces. A plain NSWindow
+    /// (even with FullScreenAuxiliary and the Accessory policy that `run()` sets) is kept
+    /// out of those on recent macOS; a non-activating NSPanel is let in, so the window is
+    /// turned into one. Main thread only.
     pub fn float_everywhere(win: &WebviewWindow) {
         let Ok(ptr) = win.ns_window() else { return };
         if ptr.is_null() {
             return;
         }
         unsafe {
+            let cls = panel_class();
+            if !cls.is_null() {
+                object_setClass(ptr, cls);
+            }
             let ns = &*(ptr as *const AnyObject);
+            if !cls.is_null() {
+                let mask: usize = msg_send![ns, styleMask];
+                let _: () = msg_send![ns, setStyleMask: mask | NONACTIVATING_PANEL];
+                let _: () = msg_send![ns, setFloatingPanel: true];
+                // Panels hide when their app deactivates by default; this app is never active.
+                let _: () = msg_send![ns, setHidesOnDeactivate: false];
+                let _: () = msg_send![ns, setBecomesKeyOnlyIfNeeded: true];
+            }
             let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
             let _: () = msg_send![ns, setCollectionBehavior: behavior];
             let _: () = msg_send![ns, setLevel: STATUS_WINDOW_LEVEL];
+        }
+    }
+
+    /// If switching to a full-screen Space left the overlay behind, order it in again
+    /// (a FullScreenAuxiliary window joins the Space it's ordered onto). Main thread only.
+    pub fn rejoin_active_space(win: &WebviewWindow) {
+        let Ok(ptr) = win.ns_window() else { return };
+        if ptr.is_null() {
+            return;
+        }
+        unsafe {
+            let ns = &*(ptr as *const AnyObject);
+            let on_active: bool = msg_send![ns, isOnActiveSpace];
+            if !on_active {
+                let _: () = msg_send![ns, orderFrontRegardless];
+            }
         }
     }
 }
@@ -119,6 +195,12 @@ pub fn spawn_hit_tester(app: AppHandle) {
                 if win.set_ignore_cursor_events(!want).is_ok() {
                     interactive = Some(want);
                 }
+            }
+
+            #[cfg(target_os = "macos")]
+            if tick % 10 == 0 && !HIDDEN.load(Ordering::Relaxed) {
+                let w = win.clone();
+                let _ = win.run_on_main_thread(move || macos::rejoin_active_space(&w));
             }
 
             // Brightness of what's behind the overlay, ~2/s. The UI picks the panel tone

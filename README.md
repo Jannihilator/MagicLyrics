@@ -15,7 +15,7 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 - Installs per-user (no admin).
 - The UI can only call MagicLyrics' own commands plus window drag/resize (`src-tauri/capabilities/default.json`); no filesystem, shell or HTTP access from the web layer. Strict CSP.
 - Click-through is done by polling the cursor position — no global mouse/keyboard hooks.
-- Auto light/dark (Windows): twice a second it averages the brightness of a thin strip of screen pixels just outside the overlay's edges. Only one number is kept; nothing is saved or sent. Not done on macOS, where it would need the Screen Recording permission.
+- Auto light/dark (Windows): twice a second it averages the brightness of a thin strip of screen pixels just outside the overlay's edges. Only one number is kept; nothing is saved or sent. Not available on macOS.
 - Network: only HTTPS GETs to the lyrics sites below.
 
 ## Install
@@ -24,6 +24,22 @@ Download the latest build from [Releases](https://github.com/Jannihilator/MagicL
 
 - **Windows:** `MagicLyrics_x.y.z_x64-setup.exe`. Windows 10/11 (WebView2 is preinstalled on 11). The installer isn't code-signed, so SmartScreen may warn: *More info* → *Run anyway*.
 - **macOS:** `MagicLyrics_x.y.z_universal.dmg` (Apple Silicon + Intel). The app is ad-hoc signed, not notarized. First launch: open the app, then System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/MagicLyrics.app`).
+
+## Is this safe?
+
+MagicLyrics is open source, and you don't have to take anyone's word for what's in the download:
+
+- **Built in public.** Every file on the Releases page is built by [GitHub Actions](https://github.com/Jannihilator/MagicLyrics/actions) straight from the tagged source code. Nobody uploads a file by hand, and the build logs are public.
+- **Build attestations.** GitHub signs a record of the workflow and commit each file came from. With the [GitHub CLI](https://cli.github.com/) installed, check one like this:
+  ```
+  gh attestation verify MagicLyrics_x.y.z_x64-setup.exe --repo Jannihilator/MagicLyrics
+  ```
+- **Checksums.** Each release includes `SHA256SUMS.txt`. Compare it with the hash of the file you downloaded:
+  - Windows: `certutil -hashfile MagicLyrics_x.y.z_x64-setup.exe SHA256`
+  - macOS: `shasum -a 256 MagicLyrics_x.y.z_universal.dmg`
+- **Small footprint.** See [Least privilege](#least-privilege): no admin rights, no global keyboard/mouse hooks, and network traffic only to lyrics sites.
+
+**Why the warnings?** Code-signing certificates cost money every year, so the builds aren't signed. Windows SmartScreen and macOS Gatekeeper warn about any unsigned app, whatever is inside it. The [Install](#install) section shows how to get past the warnings.
 
 ## How it works
 
