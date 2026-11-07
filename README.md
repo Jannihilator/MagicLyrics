@@ -1,8 +1,6 @@
 # MagicLyrics
 
-<video src="https://github.com/Jannihilator/MagicLyrics/raw/main/docs/demo.mp4" controls muted width="720"></video>
-
-[Watch the demo](docs/demo.mp4)
+https://github.com/user-attachments/assets/c2318286-071a-498f-a7c5-6db805d91491
 
 A small floating lyrics overlay for whatever is playing — Spotify, Apple Music, YouTube / YouTube Music in a browser — on Windows and macOS.
 
