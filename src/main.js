@@ -473,6 +473,9 @@ function renderUpdate(u) {
   }[u.state] || ["⬆ Check for updates", `Check for a newer version (now v${u.current})`];
   btn.textContent = text;
   btn.title = title;
+  const note = $("updateNote");
+  note.hidden = u.state !== "error";
+  note.textContent = u.state === "error" ? u.error || "Unknown error" : "";
   btn.disabled = u.state === "checking" || u.state === "downloading";
   btn.classList.toggle("primary", u.state === "available");
   app.classList.toggle("has-update", u.state === "available");

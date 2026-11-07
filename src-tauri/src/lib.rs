@@ -1,4 +1,7 @@
 ﻿mod cache;
+// Pure helpers are unit-tested on every platform.
+#[cfg(any(target_os = "macos", test))]
+mod install_location;
 mod lyrics;
 mod media;
 mod overlay;
@@ -185,11 +188,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
 
     let toggle = MenuItem::with_id(app, "toggle", "Hide Lyrics", true, None::<&str>)?;
+    let here = MenuItem::with_id(app, "here", "Move Lyrics Here", true, None::<&str>)?;
     let update = MenuItem::with_id(app, "update", "Check for Updates…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit MagicLyrics", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&toggle, &sep, &update, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &here, &sep, &update, &quit])?;
     app.state::<updater::Updates>().set_tray_item(update);
+    app.manage(TrayToggle(toggle));
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("MagicLyrics")
@@ -198,12 +203,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(move |app, ev| match ev.id.as_ref() {
             "toggle" => {
                 if let Some(win) = app.get_webview_window("main") {
-                    let visible = win.is_visible().unwrap_or(true);
-                    overlay::HIDDEN.store(visible, Ordering::Relaxed);
-                    let _ = if visible { win.hide() } else { win.show() };
-                    let _ = toggle.set_text(if visible { "Show Lyrics" } else { "Hide Lyrics" });
+                    set_overlay_visible(app, !win.is_visible().unwrap_or(true));
                 }
             }
+            "here" => bring_back(app),
             "update" => updater::on_tray_click(app),
             "quit" => save_and_exit(app),
             _ => {}
@@ -213,6 +216,49 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     }
     tray.build(app)?;
     Ok(())
+}
+
+/// The tray's Hide/Show item, so its label follows the overlay however it's shown.
+struct TrayToggle(tauri::menu::MenuItem<tauri::Wry>);
+
+fn set_overlay_visible(app: &AppHandle, visible: bool) {
+    let Some(win) = app.get_webview_window("main") else { return };
+    overlay::HIDDEN.store(!visible, Ordering::Relaxed);
+    let _ = if visible { win.show() } else { win.hide() };
+    if let Some(t) = app.try_state::<TrayToggle>() {
+        let _ = t.0.set_text(if visible { "Hide Lyrics" } else { "Show Lyrics" });
+    }
+}
+
+/// Show the overlay in its default corner of the screen the cursor is on, for when it
+/// got lost (hidden, on another screen, or just not noticed). Used by the tray's
+/// "Move Lyrics Here" and, on macOS, by opening the app again while it runs.
+fn bring_back(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("main") else { return };
+    let monitors = win.available_monitors().unwrap_or_default();
+    // Same unit fix-up as the hit tester: on macOS the cursor comes scaled by the
+    // primary display, monitor bounds by their own scale; compare in points.
+    let cursor = app.cursor_position().ok().map(|c| {
+        let k = if cfg!(target_os = "macos") {
+            win.primary_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        (c.x / k, c.y / k)
+    });
+    let under_cursor = cursor.and_then(|(x, y)| {
+        monitors.iter().find(|m| {
+            let k = geom_div(m.scale_factor());
+            let (px, py) = (m.position().x as f64 / k, m.position().y as f64 / k);
+            let (pw, ph) = (m.size().width as f64 / k, m.size().height as f64 / k);
+            x >= px && y >= py && x < px + pw && y < py + ph
+        })
+    });
+    let monitor = under_cursor.cloned().or_else(|| win.primary_monitor().ok().flatten());
+    if let Some(pos) = monitor.and_then(|m| default_spot(&win, &m)) {
+        let _ = win.set_position(pos);
+    }
+    set_overlay_visible(app, true);
 }
 
 // ---------------------------------------------------------------- lyrics
@@ -440,14 +486,23 @@ fn restore_geometry(win: &WebviewWindow, s: &Settings) -> bool {
         }
     }
     // Default: bottom-right corner of the primary screen, above the taskbar.
-    if let (Ok(Some(m)), Ok(size)) = (win.primary_monitor(), win.outer_size()) {
-        let wa = m.work_area();
-        let margin = (24.0 * m.scale_factor()) as i32;
-        let x = wa.position.x + wa.size.width as i32 - size.width as i32 - margin;
-        let y = wa.position.y + wa.size.height as i32 - size.height as i32 - margin;
-        let _ = win.set_position(PhysicalPosition::new(x, y));
+    if let Some(pos) = win.primary_monitor().ok().flatten().and_then(|m| default_spot(win, &m)) {
+        let _ = win.set_position(pos);
     }
     false
+}
+
+/// Bottom-right corner of `m`'s work area (above the taskbar / Dock), 24 points in.
+fn default_spot(win: &WebviewWindow, m: &tauri::Monitor) -> Option<Position> {
+    let wa = m.work_area();
+    let k = geom_div(m.scale_factor());
+    let size = win.outer_size().ok()?;
+    let ks = geom_div(win.scale_factor().ok()?);
+    let (w, h) = (size.width as f64 / ks, size.height as f64 / ks);
+    let margin = 24.0 * m.scale_factor() / k;
+    let x = wa.position.x as f64 / k + wa.size.width as f64 / k - w - margin;
+    let y = wa.position.y as f64 / k + wa.size.height as f64 / k - h - margin;
+    Some(to_position(x.round() as i32, y.round() as i32))
 }
 
 pub fn run() {
@@ -503,6 +558,14 @@ pub fn run() {
             overlay::spawn_hit_tester(app.handle().clone());
             spawn_media_worker(app.handle().clone(), rx);
             updater::spawn_background_checks(app.handle().clone());
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(1500)); // let the overlay appear first
+                    install_location::offer_move(handle);
+                });
+            }
             Ok(())
         })
         .on_window_event(|win, ev| {
@@ -539,6 +602,16 @@ pub fn run() {
             updater::install_update,
             quit
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running MagicLyrics");
+        .build(tauri::generate_context!())
+        .expect("error while building MagicLyrics")
+        .run(|app, ev| {
+            // Opening the app again (Launchpad, Spotlight, Finder) while it runs: there's
+            // no Dock icon or window to switch to, so bring the lyrics to the user.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = ev {
+                bring_back(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, ev);
+        });
 }

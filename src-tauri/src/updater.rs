@@ -123,7 +123,7 @@ pub async fn check(app: &AppHandle, quiet: bool) {
             if !quiet {
                 set(app, |s| {
                     s.state = "error".into();
-                    s.error = Some(e);
+                    s.error = Some(explain(&e));
                 });
             }
         }
@@ -138,6 +138,17 @@ pub async fn install(app: &AppHandle) {
     let Some(update) = u.pending.lock().unwrap().clone() else {
         return check(app, false).await;
     };
+    // Running from the .dmg or a translocated copy: the app can't be replaced, so say
+    // what to do instead of downloading first and failing.
+    #[cfg(target_os = "macos")]
+    if let Some(msg) = crate::install_location::update_blocker() {
+        set(app, |s| {
+            s.state = "error".into();
+            s.progress = None;
+            s.error = Some(msg);
+        });
+        return;
+    }
     if u.busy.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -174,9 +185,46 @@ pub async fn install(app: &AppHandle) {
             set(app, |s| {
                 s.state = "error".into();
                 s.progress = None;
-                s.error = Some(e.to_string());
+                s.error = Some(explain(&e.to_string()));
             });
         }
+    }
+}
+
+/// Add what to do about the errors users can fix themselves; keep the original text.
+fn explain(err: &str) -> String {
+    let e = err.to_lowercase();
+    let hint = if e.contains("read-only file system") || e.contains("same mount point") {
+        Some("MagicLyrics can't be replaced where it is. Move it to Applications, open it from there, then update.")
+    } else if cfg!(target_os = "macos")
+        && (e.contains("operation not permitted")
+            || e.contains("permission denied")
+            || e.contains("move the new app into place"))
+    {
+        Some(
+            "macOS didn't allow replacing the app. Allow MagicLyrics under System Settings → Privacy & Security → \
+             App Management and try again, or install the new version from the .dmg on the Releases page.",
+        )
+    } else if e.contains("error sending request") || e.contains("error decoding response") {
+        Some("Couldn't download the update. Check your internet connection and try again.")
+    } else {
+        None
+    };
+    match hint {
+        Some(h) => format!("{h} ({err})"),
+        None => err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::explain;
+
+    #[test]
+    fn explains_fixable_errors() {
+        assert!(explain("Read-only file system (os error 30)").starts_with("MagicLyrics can't be replaced"));
+        assert!(explain("error sending request for url (https://x)").starts_with("Couldn't download"));
+        assert_eq!(explain("something else"), "something else");
     }
 }
 

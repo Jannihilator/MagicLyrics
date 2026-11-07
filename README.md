@@ -9,7 +9,7 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 - Always on top, **never takes focus**, **clicks pass through** to the app underneath
 - One small handle (top-right `···`) is the only clickable spot; click it to open the controls
 - Controls: move (drag the title), resize (corner grip), toggle album art / title / play-pause, text size, opacity, theme (auto / light / dark), color, sync lyrics, re-search lyrics, quit
-- Tray icon (Windows) / menu-bar icon (macOS) to hide/show the overlay or quit
+- Tray icon (Windows) / menu-bar icon (macOS) to hide/show the overlay, **Move Lyrics Here** (brings it to the screen you're on), or quit. On macOS, opening MagicLyrics again (Launchpad, Spotlight) while it runs does the same
 - Remembers window position, size and toggles; caches lyrics on disk so known songs work offline
 - Updates itself: a dot on the handle when a new version is out, then **Update** in the controls (or the tray menu) downloads, installs and restarts
 
@@ -27,7 +27,7 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 Download the latest build from [Releases](https://github.com/Jannihilator/MagicLyrics/releases):
 
 - **Windows:** `MagicLyrics_x.y.z_x64-setup.exe`. Windows 10/11 (WebView2 is preinstalled on 11). The installer isn't code-signed, so SmartScreen may warn: *More info* → *Run anyway*.
-- **macOS:** `MagicLyrics_x.y.z_universal.dmg` (Apple Silicon + Intel). The app is ad-hoc signed, not notarized. First launch: open the app, then System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/MagicLyrics.app`).
+- **macOS:** `MagicLyrics_x.y.z_universal.dmg` (Apple Silicon + Intel). Drag MagicLyrics to Applications and open it from there (if you open it from the disk image or Downloads, it offers to install itself in Applications; in-app updates need that). The app is ad-hoc signed, not notarized. First launch: open the app, then System Settings → Privacy & Security → *Open Anyway* (or `xattr -dr com.apple.quarantine /Applications/MagicLyrics.app`). It lives in the menu bar, not the Dock.
 
 ### Updating
 

@@ -23,6 +23,8 @@ pub struct Settings {
     /// macOS: x/y/width/height are logical points (older builds saved mismatched
     /// "physical" values, which are discarded once). Unused on Windows (physical pixels).
     pub geometry_logical: bool,
+    /// macOS: offer to copy the app to /Applications when it runs from elsewhere.
+    pub ask_move_to_applications: bool,
 }
 
 impl Default for Settings {
@@ -40,6 +42,7 @@ impl Default for Settings {
             width: None,
             height: None,
             geometry_logical: false,
+            ask_move_to_applications: true,
         }
     }
 }

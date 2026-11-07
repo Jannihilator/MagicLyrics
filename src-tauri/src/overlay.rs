@@ -136,6 +136,8 @@ mod macos {
             let behavior = CAN_JOIN_ALL_SPACES | STATIONARY | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY;
             let _: () = msg_send![ns, setCollectionBehavior: behavior];
             let _: () = msg_send![ns, setLevel: STATUS_WINDOW_LEVEL];
+            // This app is never the active one, and macOS hides tooltips of inactive apps.
+            let _: () = msg_send![ns, setAllowsToolTipsWhenApplicationIsInactive: true];
         }
     }
 
