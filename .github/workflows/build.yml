@@ -117,11 +117,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # An artifact uploaded from two folders (macOS: bundle/dmg + bundle/macos) keeps
+      # those subfolders; move everything to dist/ itself.
+      - name: Flatten downloaded files
+        run: |
+          find dist -mindepth 2 -type f -exec mv -t dist {} +
+          find dist -mindepth 1 -type d -empty -delete
+          ls -l dist
+
       # Universal macOS bundles have no version in the name; add it so each release's files are distinct.
       - name: Name the macOS update file
         working-directory: dist
         run: |
           v="${GITHUB_REF_NAME#v}"
+          for f in *.exe.sig MagicLyrics.app.tar.gz MagicLyrics.app.tar.gz.sig; do
+            [ -e "$f" ] || { echo "::error::Missing $f. Are the TAURI_SIGNING_PRIVATE_KEY secrets set as repository secrets?"; exit 1; }
+          done
           mv MagicLyrics.app.tar.gz "MagicLyrics_${v}_universal.app.tar.gz"
           mv MagicLyrics.app.tar.gz.sig "MagicLyrics_${v}_universal.app.tar.gz.sig"
 
