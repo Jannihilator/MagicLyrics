@@ -69,15 +69,24 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
         }
     }
 
-    // 2) Search with cleaned title + primary artist, pick the closest match. If that
-    //    finds nothing usable (the player's artist spelling often differs from
-    //    LRCLIB's: Simplified vs Traditional, English name), search by title alone and
-    //    accept an artist mismatch only when the duration is a near-exact match.
+    // 2) Search with cleaned title + primary artist, pick the closest match.
     let title = q.clean_title();
     let artist = q.primary_artist();
     let mut best = pick(&search(client, &title, Some(&artist)).await?, q, &title, &artist, false);
-    if best.is_none() && dur_s > 0 {
-        best = pick(&search(client, &title, None).await?, q, &title, &artist, true);
+
+    // 3) LRCLIB's artist filter is literal, so 张栋梁 misses 張棟樑 and an English
+    //    name misses the Chinese one. Without a synced hit, search by title alone and
+    //    compare artists script-folded. A different artist is accepted only for a
+    //    Chinese title that matches exactly with a near-identical duration (the same
+    //    recording listed under another name); never for other titles, where common
+    //    names like "Hello" would pull in unrelated songs.
+    if !best.as_ref().is_some_and(|r| r.synced_lyrics.is_some()) {
+        let loose = dur_s > 0 && super::is_chinese(&title);
+        if let Some(r) = pick(&search(client, &title, None).await?, q, &title, &artist, loose) {
+            if best.is_none() || r.synced_lyrics.is_some() {
+                best = Some(r);
+            }
+        }
     }
     let found = best.and_then(|r| to_lyrics(&r));
     Ok(match (found, exact_plain) {
@@ -104,13 +113,15 @@ async fn search(client: &Client, title: &str, artist: Option<&str>) -> Result<Ve
     resp.json().await.map_err(|e| e.to_string())
 }
 
-/// Normalize for comparison, folding Simplified Chinese into Traditional.
+/// Normalize for comparison. Chinese is folded into Simplified: Traditional ->
+/// Simplified is many-to-one (張棟樑 and 張棟梁 both become 张栋梁), the other
+/// direction is not.
 fn norm(s: &str) -> String {
-    normalize(&zhconv::zhconv(s, zhconv::Variant::ZhHant))
+    normalize(&zhconv::zhconv(s, zhconv::Variant::ZhHans))
 }
 
 /// Best-scoring record. With `loose_artist`, a non-matching artist is allowed but
-/// the duration must be within 3 s.
+/// the title must match exactly and the duration must be within 3 s.
 fn pick(records: &[Record], q: &Query, title: &str, artist: &str, loose_artist: bool) -> Option<Record> {
     let dur_s = q.duration_ms / 1000;
     let want_title = norm(title);
@@ -118,11 +129,13 @@ fn pick(records: &[Record], q: &Query, title: &str, artist: &str, loose_artist: 
     let score = |r: &Record| -> Option<i64> {
         let t = norm(&super::clean_title(r.track_name.as_deref().unwrap_or("")));
         let a = norm(r.artist_name.as_deref().unwrap_or(""));
-        if t != want_title && !t.contains(&want_title) && !want_title.contains(&t) {
+        // An empty name would "contain"-match anything.
+        if t.is_empty() || (t != want_title && !t.contains(&want_title) && !want_title.contains(&t)) {
             return None;
         }
-        let artist_ok = want_artist.is_empty() || a.contains(&want_artist) || want_artist.contains(&a);
-        if !artist_ok && !loose_artist {
+        let artist_ok =
+            want_artist.is_empty() || (!a.is_empty() && (a.contains(&want_artist) || want_artist.contains(&a)));
+        if !artist_ok && !(loose_artist && t == want_title) {
             return None;
         }
         if !variant_ok(r.track_name.as_deref().unwrap_or(""), &q.title) {
@@ -152,4 +165,53 @@ fn pick(records: &[Record], q: &Query, title: &str, artist: &str, loose_artist: 
         .filter_map(|r| score(r).map(|s| (s, r)))
         .max_by_key(|(s, _)| *s)
         .map(|(_, r)| r.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(title: &str, artist: &str, dur: f64, synced: bool) -> Record {
+        Record {
+            track_name: Some(title.into()),
+            artist_name: Some(artist.into()),
+            duration: Some(dur),
+            instrumental: Some(false),
+            plain_lyrics: Some("a\nb\nc".into()),
+            synced_lyrics: synced.then(|| "[00:01.00]a\n[00:02.00]b\n[00:03.00]c".into()),
+        }
+    }
+
+    fn q(title: &str, artist: &str, secs: u64) -> Query {
+        Query { title: title.into(), artist: artist.into(), album: String::new(), duration_ms: secs * 1000 }
+    }
+
+    #[test]
+    fn simplified_artist_matches_traditional_variant() {
+        // 张栋梁 -> 張棟梁 in Traditional, but LRCLIB's synced copy says 張棟樑.
+        let rs = [rec("寂寞邊界", "張棟梁", 271.5, false), rec("寂寞邊界", "張棟樑", 271.0, true)];
+        let r = pick(&rs, &q("寂寞邊界", "张栋梁", 271), "寂寞邊界", "张栋梁", false).unwrap();
+        assert_eq!(r.artist_name.as_deref(), Some("張棟樑"));
+    }
+
+    #[test]
+    fn strict_rejects_other_artist() {
+        let rs = [rec("Hello", "Someone Else", 230.0, true)];
+        assert!(pick(&rs, &q("Hello", "Nobody", 230), "Hello", "Nobody", false).is_none());
+    }
+
+    #[test]
+    fn loose_needs_exact_title_and_close_duration() {
+        let qq = q("愛", "無名", 240);
+        assert!(pick(&[rec("愛你", "某人", 240.0, true)], &qq, "愛", "無名", true).is_none());
+        assert!(pick(&[rec("愛", "某人", 246.0, true)], &qq, "愛", "無名", true).is_none());
+        assert!(pick(&[rec("愛", "某人", 241.0, true)], &qq, "愛", "無名", true).is_some());
+    }
+
+    #[test]
+    fn empty_names_do_not_match_everything() {
+        let qq = q("寂寞邊界", "張棟樑", 271);
+        assert!(pick(&[rec("", "張棟樑", 271.0, true)], &qq, "寂寞邊界", "張棟樑", false).is_none());
+        assert!(pick(&[rec("寂寞邊界", "", 271.0, true)], &qq, "寂寞邊界", "張棟樑", false).is_none());
+    }
 }

@@ -336,6 +336,18 @@ mod tests {
         }
     }
 
+    /// Common titles by an artist LRCLIB doesn't know must not borrow another
+    /// artist's lyrics.
+    #[test]
+    #[ignore]
+    fn live_no_other_artist_for_common_titles() {
+        for (title, secs) in [("Hello", 230), ("Home", 200), ("Stay", 190), ("愛", 240), ("想你", 250)] {
+            if let Outcome::Found(l) = live(title, "Nobody Real Band", "", secs) {
+                panic!("{title}: got lyrics from {} ({:?}...)", l.source, l.lines.first().map(|x| &x.text));
+            }
+        }
+    }
+
     #[test]
     fn bilingual_variants() {
         let q = Query { title: "告白氣球 Love Confession".into(), artist: "周杰倫 Jay Chou".into(), album: "".into(), duration_ms: 215_000 };
