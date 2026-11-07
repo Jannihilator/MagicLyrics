@@ -11,6 +11,7 @@ const SOURCE: &str = "LRCLIB";
 struct Record {
     track_name: Option<String>,
     artist_name: Option<String>,
+    album_name: Option<String>,
     duration: Option<f64>,
     instrumental: Option<bool>,
     plain_lyrics: Option<String>,
@@ -72,7 +73,7 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
     // 2) Search with cleaned title + primary artist, pick the closest match.
     let title = q.clean_title();
     let artist = q.primary_artist();
-    let mut best = pick(&search(client, &title, Some(&artist)).await?, q, &title, &artist, false);
+    let mut best = pick(&search(client, &[("track_name", &title), ("artist_name", &artist)]).await?, q, &title, &artist, false);
 
     // 3) LRCLIB's artist filter is literal, so 张栋梁 misses 張棟樑 and an English
     //    name misses the Chinese one. Without a synced hit, search by title alone and
@@ -82,10 +83,26 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
     //    names like "Hello" would pull in unrelated songs.
     if !best.as_ref().is_some_and(|r| r.synced_lyrics.is_some()) {
         let loose = dur_s > 0 && super::is_chinese(&title);
-        if let Some(r) = pick(&search(client, &title, None).await?, q, &title, &artist, loose) {
+        if let Some(r) = pick(&search(client, &[("track_name", &title)]).await?, q, &title, &artist, loose) {
             if best.is_none() || r.synced_lyrics.is_some() {
                 best = Some(r);
             }
+        }
+    }
+
+    // 4) Translated titles: official uploads can carry an English title
+    //    ("Loneliness") that LRCLIB only lists as 寂寞邊界. When the player reports
+    //    the album, take the one song on that album with the same length (±2 s), then
+    //    search again under its real title for a synced copy.
+    if best.is_none() && exact_plain.is_none() && dur_s > 0 && !q.album.trim().is_empty() {
+        if let Some(hit) = album_match(&search(client, &[("q", q.album.trim())]).await?, q) {
+            let real = super::clean_title(hit.track_name.as_deref().unwrap_or(""));
+            let real_artist = hit.artist_name.clone().unwrap_or_default();
+            let loose = super::is_chinese(&real);
+            best = match pick(&search(client, &[("track_name", &real)]).await?, q, &real, &real_artist, loose) {
+                Some(r) if r.synced_lyrics.is_some() => Some(r),
+                _ => Some(hit),
+            };
         }
     }
     let found = best.and_then(|r| to_lyrics(&r));
@@ -96,14 +113,33 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
     })
 }
 
-async fn search(client: &Client, title: &str, artist: Option<&str>) -> Result<Vec<Record>, String> {
-    let mut params = vec![("track_name", title)];
-    if let Some(a) = artist {
-        params.push(("artist_name", a));
+/// The single song on the query's album whose length is within 2 s. `None` when
+/// two different songs on the album fit (ambiguous).
+fn album_match(records: &[Record], q: &Query) -> Option<Record> {
+    let want_album = norm(&q.album);
+    let dur = (q.duration_ms / 1000) as f64;
+    let fits: Vec<&Record> = records
+        .iter()
+        .filter(|r| {
+            !want_album.is_empty()
+                && norm(r.album_name.as_deref().unwrap_or("")) == want_album
+                && r.duration.is_some_and(|d| (d - dur).abs() <= 2.0)
+                && variant_ok(r.track_name.as_deref().unwrap_or(""), &q.title)
+                && to_lyrics(r).is_some()
+        })
+        .collect();
+    let title_of = |r: &Record| norm(&super::clean_title(r.track_name.as_deref().unwrap_or("")));
+    let first = title_of(fits.first()?);
+    if first.is_empty() || fits.iter().any(|r| title_of(r) != first) {
+        return None;
     }
+    fits.iter().find(|r| r.synced_lyrics.is_some()).or(fits.first()).map(|r| (*r).clone())
+}
+
+async fn search(client: &Client, params: &[(&str, &str)]) -> Result<Vec<Record>, String> {
     let resp = client
         .get("https://lrclib.net/api/search")
-        .query(&params)
+        .query(params)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -175,6 +211,7 @@ mod tests {
         Record {
             track_name: Some(title.into()),
             artist_name: Some(artist.into()),
+            album_name: Some("Greatest Hits".into()),
             duration: Some(dur),
             instrumental: Some(false),
             plain_lyrics: Some("a\nb\nc".into()),
@@ -206,6 +243,19 @@ mod tests {
         assert!(pick(&[rec("愛你", "某人", 240.0, true)], &qq, "愛", "無名", true).is_none());
         assert!(pick(&[rec("愛", "某人", 246.0, true)], &qq, "愛", "無名", true).is_none());
         assert!(pick(&[rec("愛", "某人", 241.0, true)], &qq, "愛", "無名", true).is_some());
+    }
+
+    #[test]
+    fn album_match_needs_one_song_of_that_length() {
+        let qq = Query { title: "Loneliness".into(), artist: "Nicholas Teo".into(), album: "Greatest Hits".into(), duration_ms: 272_000 };
+        let hit = album_match(&[rec("陌路", "x", 291.0, true), rec("寂寞邊界", "張棟梁", 271.0, false)], &qq).unwrap();
+        assert_eq!(hit.track_name.as_deref(), Some("寂寞邊界"));
+        // Two different songs of that length: ambiguous.
+        assert!(album_match(&[rec("寂寞邊界", "x", 271.0, false), rec("陌路", "x", 273.0, true)], &qq).is_none());
+        // Same length on another album: no.
+        let mut other = rec("寂寞邊界", "x", 271.0, false);
+        other.album_name = Some("Other".into());
+        assert!(album_match(&[other], &qq).is_none());
     }
 
     #[test]

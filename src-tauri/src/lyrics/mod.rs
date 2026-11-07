@@ -185,6 +185,20 @@ pub fn variants(q: &Query) -> Vec<Query> {
     out
 }
 
+/// Artist and title swapped, for uploads titled song-first ("晴天 - 周杰倫",
+/// "【周杰倫】晴天") that the song detector reads the wrong way round. Only for
+/// tracks without an album: players that report one (Spotify, YouTube Music
+/// official tracks) give artist and title in their proper fields.
+fn swapped(q: &Query) -> Option<Query> {
+    let (t, a) = (q.title.trim(), q.artist.trim());
+    (q.album.trim().is_empty() && !t.is_empty() && !a.is_empty() && normalize(t) != normalize(a)).then(|| Query {
+        title: a.to_string(),
+        artist: t.to_string(),
+        album: String::new(),
+        duration_ms: q.duration_ms,
+    })
+}
+
 pub async fn find(client: &Client, q: &Query) -> Outcome {
     let chinese = is_chinese(&q.title) || is_chinese(&q.artist);
     let mut first_plain: Option<Lyrics> = None;
@@ -193,6 +207,15 @@ pub async fn find(client: &Client, q: &Query) -> Outcome {
         match find_one(client, &v, &mut first_plain, &mut reached_any).await {
             Some(l) => return Outcome::Found(finish(l, chinese)),
             None => {}
+        }
+    }
+    // Nothing at all under the given order: try it the other way round.
+    if first_plain.is_none() {
+        for v in swapped(q).iter().flat_map(variants) {
+            match find_one(client, &v, &mut first_plain, &mut reached_any).await {
+                Some(l) => return Outcome::Found(finish(l, chinese)),
+                None => {}
+            }
         }
     }
     match first_plain {
@@ -334,6 +357,47 @@ mod tests {
                 _ => panic!("not found: {title} / {artist}"),
             }
         }
+    }
+
+    /// Exactly what YouTube Music reports (media session title / artist / album)
+    /// for three uploads of 寂寞邊界, through the song detector and the lookup.
+    #[test]
+    #[ignore]
+    fn live_youtube_music_uploads() {
+        for (title, channel, album, secs) in [
+            ("張棟樑-寂寞邊界", "林music BST", "", 270),
+            ("Loneliness", "Nicholas Teo", "Nicholas Greatest Hits Compilation", 272),
+            ("張棟樑《寂寞邊界》【歌詞】", "魚魚愛音樂", "", 264),
+        ] {
+            let g = crate::media::browser::classify(title, channel, album, secs * 1000);
+            assert!(g.music, "{title}");
+            match live(&g.title, &g.artist, album, secs) {
+                Outcome::Found(l) => println!("{title} -> {}/{}: {} synced={}", g.artist, g.title, l.source, l.synced),
+                _ => panic!("not found: {title} -> {g:?}"),
+            }
+        }
+    }
+
+    /// Song-first upload titles, read by the detector as artist = song.
+    #[test]
+    #[ignore]
+    fn live_song_first_uploads() {
+        for (title, secs) in [("晴天-周杰倫", 269), ("晴天 - 周杰倫", 269), ("【周杰倫】晴天", 269), ("寂寞邊界-張棟樑", 271)] {
+            let g = crate::media::browser::classify(title, "Random Uploader", "", secs * 1000);
+            match live(&g.title, &g.artist, "", secs) {
+                Outcome::Found(l) => println!("{title} -> {}/{}: {} synced={}", g.artist, g.title, l.source, l.synced),
+                _ => panic!("not found: {title} -> {g:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn swap_only_without_album() {
+        let q = Query { title: "周杰倫".into(), artist: "晴天".into(), album: "".into(), duration_ms: 0 };
+        let s = swapped(&q).unwrap();
+        assert_eq!((s.artist.as_str(), s.title.as_str()), ("周杰倫", "晴天"));
+        assert!(swapped(&Query { album: "葉惠美".into(), ..q.clone() }).is_none());
+        assert!(swapped(&Query { artist: "".into(), ..q }).is_none());
     }
 
     /// Common titles by an artist LRCLIB doesn't know must not borrow another

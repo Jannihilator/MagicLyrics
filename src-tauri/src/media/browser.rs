@@ -135,7 +135,7 @@ pub fn classify(title: &str, channel: &str, album: &str, duration_ms: u64) -> Gu
         // 周杰倫 Jay Chou【告白氣球 Love Confession】
         let a = if outside.is_empty() { channel_artist.clone() } else { outside };
         (a, title, true)
-    } else if let Some((left, right)) = DASHES.iter().find_map(|d| t.split_once(d)) {
+    } else if let Some((left, right)) = DASHES.iter().find_map(|d| t.split_once(d)).or_else(|| han_dash(&t)) {
         let (l, r) = (tidy(left), tidy(right));
         // Usually "Artist - Song"; swap when the right side is the channel's name.
         let ch = norm(&channel_artist);
@@ -154,6 +154,17 @@ pub fn classify(title: &str, channel: &str, album: &str, duration_ms: u64) -> Gu
         return no(raw);
     }
     Guess { music: true, artist, title: song }
+}
+
+/// "張棟樑-寂寞邊界": an unspaced dash with Han characters right on both sides.
+/// (Latin words keep theirs: "Anti-Hero" is one title.)
+fn han_dash(t: &str) -> Option<(&str, &str)> {
+    let is_han = |c: char| matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF);
+    let chars: Vec<(usize, char)> = t.char_indices().collect();
+    chars.windows(3).find_map(|w| {
+        let [(_, a), (i, d), (_, b)] = [w[0], w[1], w[2]];
+        (matches!(d, '-' | '–' | '—') && is_han(a) && is_han(b)).then(|| (&t[..i], &t[i + d.len_utf8()..]))
+    })
 }
 
 /// Text inside 【】「」『』《》 and the text around it.
@@ -258,6 +269,9 @@ mod tests {
             ("田馥甄 Hebe Tien".into(), "小幸運 A Little Happiness".into())
         );
         assert_eq!(song("【MV】告白氣球", "周杰倫 Jay Chou", 215), ("周杰倫 Jay Chou".into(), "告白氣球".into()));
+        // Re-upload channel, unspaced hyphen (YouTube Music reports it this way too).
+        assert_eq!(song("張棟樑-寂寞邊界", "林music BST", 271), ("張棟樑".into(), "寂寞邊界".into()));
+        assert_eq!(song("Anti-Hero", "Taylor Swift", 200), ("Taylor Swift".into(), "Anti-Hero".into()));
         assert_eq!(song("鄧紫棋 G.E.M. - 光年之外 LIGHT YEARS AWAY (動態歌詞)", "G.E.M. 鄧紫棋", 235).1, "光年之外 LIGHT YEARS AWAY");
     }
 
