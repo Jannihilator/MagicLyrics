@@ -252,12 +252,15 @@ function applySettings(s) {
 // scaling, so it can differ from the window's scale factor.
 // While the handle is pressed the whole window stays clickable, so a quick drag
 // that leaves the small handle doesn't fall through to the app underneath.
-// The play button, when shown, is clickable too (no need to open the controls).
+// The play button, when shown, is clickable too (no need to open the controls), and
+// so is the bottom-right resize corner (hidden where the OS can't drag-resize).
+// A drag that outruns these spots keeps the window clickable until the button is
+// released (see the hit tester in overlay.rs).
 let handlePressed = false;
 function reportHandleRect() {
   const boxes = handlePressed
     ? [{ left: 0, top: 0, width: innerWidth, height: innerHeight }]
-    : [$("handle"), pp].filter((el) => el.offsetParent !== null).map((el) => el.getBoundingClientRect());
+    : [$("handle"), pp, $("grip")].filter((el) => el.offsetParent !== null).map((el) => el.getBoundingClientRect());
   const pad = 3;
   const k = window.devicePixelRatio || 1;
   invoke("set_hit_rects", {
@@ -339,6 +342,7 @@ function setSyncing(on) {
   if (on) setOpen(false);
   else { clearTimeout(autoCloseTimer); tick(true); }
   updateInteractive();
+  reportHandleRect(); // the resize corner is hidden while syncing
 }
 
 function scrollLyrics(y) {
@@ -489,9 +493,14 @@ $("update").addEventListener("click", () =>
 $("refetch").addEventListener("click", () => invoke("refetch_lyrics"));
 $("quit").addEventListener("click", () => invoke("quit"));
 $("drag").addEventListener("mousedown", (e) => e.button === 0 && appWindow.startDragging());
-$("grip").addEventListener("mousedown", (e) => e.button === 0 && appWindow.startResizeDragging("SouthEast"));
+// Drag-resizing a borderless window isn't supported on macOS (tao): hide the corner and
+// edge zones there so they don't swallow clicks for nothing.
+const canDragResize = !/Mac/.test(navigator.userAgent);
+app.classList.toggle("no-drag-resize", !canDragResize);
+const startResize = (dir) => appWindow.startResizeDragging(dir).catch(() => {});
+$("grip").addEventListener("mousedown", (e) => e.button === 0 && startResize("SouthEast"));
 for (const edge of document.querySelectorAll(".edge")) {
-  edge.addEventListener("mousedown", (e) => e.button === 0 && appWindow.startResizeDragging(edge.dataset.dir));
+  edge.addEventListener("mousedown", (e) => e.button === 0 && startResize(edge.dataset.dir));
 }
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 

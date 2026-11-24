@@ -184,6 +184,7 @@ fn cursor_over_clickable(app: &AppHandle, win: &WebviewWindow, state: &AppState)
 pub fn spawn_hit_tester(app: AppHandle) {
     std::thread::spawn(move || {
         let mut interactive: Option<bool> = None;
+        let mut press = Press::default();
         let mut tick: u32 = 0;
         loop {
             std::thread::sleep(Duration::from_millis(40));
@@ -191,8 +192,10 @@ pub fn spawn_hit_tester(app: AppHandle) {
             let Some(win) = app.get_webview_window("main") else { continue };
             let state = app.state::<AppState>();
 
+            let holding = press.update(primary_button_down(), interactive == Some(true));
             let want = state.controls_open.load(Ordering::Relaxed)
-                || cursor_over_clickable(&app, &win, &state);
+                || cursor_over_clickable(&app, &win, &state)
+                || holding;
             if interactive != Some(want) {
                 if win.set_ignore_cursor_events(!want).is_ok() {
                     interactive = Some(want);
@@ -232,6 +235,38 @@ pub fn spawn_hit_tester(app: AppHandle) {
             }
         }
     });
+}
+
+/// Keeps the overlay taking input through a drag that started on it: a resize or move
+/// can outrun the small clickable spots before the UI re-reports them. Only a press
+/// that begins while the overlay takes input latches, so a drag that started in another
+/// app and merely crosses the handle or the resize corner doesn't.
+#[derive(Default)]
+struct Press {
+    held: bool,
+    latched: bool,
+}
+
+impl Press {
+    /// `held`: primary button down now; `interactive`: the overlay was taking input.
+    /// Returns whether to keep taking input for the held press.
+    fn update(&mut self, held: bool, interactive: bool) -> bool {
+        if held && !self.held {
+            self.latched = interactive;
+        }
+        if !held {
+            self.latched = false;
+        }
+        self.held = held;
+        self.latched
+    }
+}
+
+fn primary_button_down() -> bool {
+    #[cfg(windows)]
+    return win32::primary_button_down();
+    #[cfg(not(windows))]
+    false
 }
 
 /// Average brightness (0 = black, 1 = white) of a thin band of screen just outside
@@ -328,6 +363,16 @@ mod win32 {
         }
     }
 
+    /// The physical button that acts as the primary one (honours swapped buttons).
+    pub fn primary_button_down() -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+        unsafe {
+            let vk = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
+            GetAsyncKeyState(vk.0 as i32) < 0
+        }
+    }
+
     fn hwnd(win: &WebviewWindow) -> Option<HWND> {
         win.hwnd().ok().map(|h| HWND(h.0 as *mut core::ffi::c_void))
     }
@@ -384,5 +429,36 @@ mod win32 {
                 Err(_) => false,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Press;
+
+    #[test]
+    fn press_on_overlay_holds_until_release() {
+        let mut p = Press::default();
+        assert!(!p.update(false, true)); // hovering the corner, no press
+        assert!(p.update(true, true)); // pressed on it
+        assert!(p.update(true, false)); // dragged off the corner: still held
+        assert!(!p.update(false, false)); // released
+    }
+
+    #[test]
+    fn drag_from_elsewhere_never_latches() {
+        let mut p = Press::default();
+        assert!(!p.update(true, false)); // pressed in another app
+        assert!(!p.update(true, true)); // crosses the corner while held
+        assert!(!p.update(true, false));
+        assert!(!p.update(false, false));
+    }
+
+    #[test]
+    fn next_press_starts_fresh() {
+        let mut p = Press::default();
+        assert!(p.update(true, true));
+        assert!(!p.update(false, true));
+        assert!(!p.update(true, false)); // new press away from the overlay
     }
 }

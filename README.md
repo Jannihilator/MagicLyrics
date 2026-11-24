@@ -7,8 +7,8 @@ A small floating lyrics overlay for whatever is playing — Spotify, Apple Music
 - Synced lyrics that follow the song, minimal translucent look
 - Adapts to what's behind it: dark panel over light backgrounds, light panel over dark ones (Windows; can also be set by hand)
 - Always on top, **never takes focus**, **clicks pass through** to the app underneath
-- One small handle (top-right `···`) is the only clickable spot; click it to open the controls
-- Controls: move (drag the title), resize (corner grip), toggle album art / title / play-pause, text size, opacity, theme (auto / light / dark), color, sync lyrics, re-search lyrics, quit
+- Only a few spots take clicks: the small handle (top-right `···`; click it to open the controls), the play button when shown, and the bottom-right corner (Windows: drag it to resize, no need to open the controls; with the controls open, any edge resizes too. Resizing isn't available on macOS yet)
+- Controls: move (drag the title), toggle album art / title / play-pause, text size, opacity, theme (auto / light / dark), color, sync lyrics, re-search lyrics, quit
 - Tray icon (Windows) / menu-bar icon (macOS) to hide/show the overlay, **Move Lyrics Here** (brings it to the screen you're on), or quit. On macOS, opening MagicLyrics again (Launchpad, Spotlight) while it runs does the same
 - Remembers window position, size and toggles; caches lyrics on disk so known songs work offline
 - Updates itself: a dot on the handle when a new version is out, then **Update** in the controls (or the tray menu) downloads, installs and restarts

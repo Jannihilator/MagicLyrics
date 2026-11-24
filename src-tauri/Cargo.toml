@@ -1,6 +1,6 @@
 [package]
 name = "magiclyrics"
-version = "0.2.9"
+version = "0.2.10"
 description = "Floating, click-through lyrics overlay for the currently playing song"
 edition = "2021"
 
@@ -37,6 +37,7 @@ windows = { version = "0.61", features = [
   "Win32_System_WinRT",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Shell",
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [profile.release]
