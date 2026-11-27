@@ -117,6 +117,10 @@ fn read(s: &Session) -> Option<Snapshot> {
     let album = props.AlbumTitle().map(|h| h.to_string()).unwrap_or_default();
     let source_app = app_id(s);
     let playing = is_playing(s);
+    let controls = s.GetPlaybackInfo().and_then(|p| p.Controls()).ok();
+    let can = |f: fn(&windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackControls) -> windows::core::Result<bool>| {
+        controls.as_ref().map_or(true, |c| f(c).unwrap_or(true))
+    };
 
     let (mut pos_ticks, end_ticks, updated) = match s.GetTimelineProperties() {
         Ok(t) => (
@@ -148,6 +152,8 @@ fn read(s: &Session) -> Option<Snapshot> {
         },
         playing,
         position_ms: (pos_ticks.max(0) / 10_000) as u64,
+        can_prev: can(|c| c.IsPreviousEnabled()),
+        can_next: can(|c| c.IsNextEnabled()),
     })
 }
 
@@ -213,5 +219,21 @@ impl MediaSource for GsmtcSource {
             .and_then(|op| op.get())
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    fn skip(&mut self, next: bool) -> Result<(), String> {
+        let s = match self.session.clone() {
+            Some(s) => s,
+            None => self.ranked_sessions().into_iter().next().ok_or("no media session")?,
+        };
+        let op = if next { s.TrySkipNextAsync() } else { s.TrySkipPreviousAsync() };
+        match op.and_then(|op| op.get()) {
+            Ok(true) => {
+                self.hold.skipped(&app_id(&s));
+                Ok(())
+            }
+            Ok(false) => Err("the player refused the skip".into()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }

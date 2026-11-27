@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 pub struct Settings {
     pub show_art: bool,
     pub show_play_pause: bool,
+    /// Previous/next buttons beside play/pause (only while that is shown).
+    pub show_skip: bool,
     pub show_title: bool,
     pub font_size: u32,
     /// "auto" (follow what's behind the overlay), "dark" or "light".
@@ -32,6 +34,7 @@ impl Default for Settings {
         Self {
             show_art: true,
             show_play_pause: true,
+            show_skip: false,
             show_title: true,
             font_size: 18,
             theme: "auto".into(),
@@ -68,5 +71,20 @@ pub fn save(path: &Path, s: &Settings) {
         if std::fs::write(&tmp, json).is_ok() {
             let _ = std::fs::rename(&tmp, path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_settings_files_still_load() {
+        // Written before `showSkip` existed: missing fields take their defaults.
+        let s: Settings = serde_json::from_str(r#"{"showArt":false,"fontSize":24}"#).unwrap();
+        assert!(!s.show_art);
+        assert_eq!(s.font_size, 24);
+        assert!(!s.show_skip);
+        assert!(s.show_play_pause);
     }
 }

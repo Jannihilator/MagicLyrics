@@ -12,11 +12,19 @@
       <div id="side">
         <img id="art" alt="" />
         <div id="song"><div id="songTitle"></div><div id="songArtist"></div></div>
-        <button id="pp" class="round" title="Play / Pause" aria-label="Play / Pause"></button>
+        <div id="transport">
+          <button id="prev" class="skip" title="Previous" aria-label="Previous"><svg viewBox="0 0 16 16"><path d="M3 3h2v10H3zM13 3v10L6 8z"/></svg></button>
+          <button id="pp" class="round" title="Play / Pause" aria-label="Play / Pause"></button>
+          <button id="next" class="skip" title="Next" aria-label="Next"><svg viewBox="0 0 16 16"><path d="M11 3h2v10h-2zM3 3v10l7-5z"/></svg></button>
+        </div>
       </div>
-      <div id="viewport">
-        <div id="lines"></div>
-        <div id="status"></div>
+      <div id="lyrics">
+        <div id="viewport">
+          <div id="lines"></div>
+          <div id="status"></div>
+        </div>
+        <!-- Outside the viewport so its fade mask doesn't hide it. -->
+        <div id="plainHint">Unsynced<span class="wide"> lyrics</span><span class="scroll"> · scroll<span class="wide"> to read</span></span></div>
       </div>
     </div>
 
@@ -26,13 +34,17 @@
     </button>
 
     <div id="controls">
-      <div id="drag" title="Drag to move"><svg class="drag-icon" viewBox="0 0 12 12" aria-hidden="true"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg>Move <span id="meta"></span></div>
+      <div id="topbar">
+        <div id="drag" title="Drag to move"><svg class="drag-icon" viewBox="0 0 12 12" aria-hidden="true"><circle cx="4" cy="2.5" r="1.1"/><circle cx="8" cy="2.5" r="1.1"/><circle cx="4" cy="6" r="1.1"/><circle cx="8" cy="6" r="1.1"/><circle cx="4" cy="9.5" r="1.1"/><circle cx="8" cy="9.5" r="1.1"/></svg>Move <span id="meta"></span></div>
+        <button id="quit" title="Quit MagicLyrics">✕ Quit</button>
+      </div>
       <section class="group">
         <h3>Elements</h3>
         <div class="items">
           <label class="check" title="Show album art"><input type="checkbox" id="optArt" />Art</label>
           <label class="check" title="Show song title and artist"><input type="checkbox" id="optTitle" />Title</label>
           <label class="check" title="Show play/pause button"><input type="checkbox" id="optPP" />Play</label>
+          <label class="check" title="Show previous / next buttons beside play"><input type="checkbox" id="optSkip" />Prev / Next</label>
         </div>
       </section>
       <section class="group">
@@ -72,7 +84,6 @@
           <button id="sync" title="Fix lyrics timing: click the line you hear">⇅ Sync lyrics</button>
           <button id="refetch" title="Search lyrics for this song again">↻ Re-search</button>
           <button id="update" title="Check for a newer version">⬆ Check for updates</button>
-          <button id="quit" title="Quit MagicLyrics">✕ Quit</button>
           <!-- Why the last update failed, as text: macOS shows no tooltips for this never-active app. -->
           <p id="updateNote" hidden></p>
         </div>

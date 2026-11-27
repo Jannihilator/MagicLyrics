@@ -60,6 +60,7 @@ html, body {
   background: var(--bg);
   border-radius: var(--radius);
   transition: opacity .4s, background-color .4s;
+  container: panel / size; /* the side column adapts to its height */
 }
 #app.idle #panel { opacity: .55; }
 
@@ -72,6 +73,9 @@ html, body {
   gap: 8px;
   flex: none;
 }
+/* Fixed sizes: a short window scales the column down step by step (below) instead
+   of squashing the play button. */
+#side > * { flex: none; }
 #art {
   width: 56px;
   height: 56px;
@@ -93,6 +97,24 @@ html, body {
 }
 .round svg { width: 12px; height: 12px; fill: currentColor; }
 .round:hover { background: var(--soft-hover); }
+
+/* Play/pause with optional previous/next beside it. */
+#transport { display: flex; align-items: center; gap: 4px; }
+.skip {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: none;
+  place-items: center;
+  background: transparent;
+  color: var(--fg-soft);
+}
+.skip svg { width: 10px; height: 10px; fill: currentColor; }
+.skip:hover { background: var(--soft); color: var(--fg); }
+.skip:disabled { opacity: .35; pointer-events: none; }
+#app.show-skip .skip { display: grid; }
 
 /* Song title + artist under the art: narrow column, title up to 2 lines. */
 #song {
@@ -120,16 +142,32 @@ html, body {
 }
 
 #app.hide-art #art { display: none; }
-#app.hide-pp #pp { display: none; }
+#app.hide-pp #transport { display: none; }
 #app.hide-title #song, #app.idle #song { display: none; }
 #app.hide-art.hide-pp.hide-title #side { display: none; }
 
+/* Short window (the panel's content height): one-line title, then a smaller cover,
+   then no title when cover and play both show, then a smaller cover again.
+   Column heights: cover 56 + gap 8 + title (2 lines + artist, about 40) + gap 8 + play 28
+   = 140; one title line saves about 14 (126); a 40px cover 16 more (110); no title
+   leaves 40 + 8 + 28 = 76; a 32px cover with 6px gaps, 66. Each step kicks in 3px
+   early so a taller fallback font (CJK) still fits. Update these with the sizes. */
+@container panel (max-height: 142px) { #songTitle { -webkit-line-clamp: 1; } }
+@container panel (max-height: 128px) { #art { width: 40px; height: 40px; } }
+@container panel (max-height: 112px) { #app:not(.hide-art):not(.hide-pp) #song { display: none; } }
+@container panel (max-height: 78px) {
+  #side { gap: 6px; }
+  #art { width: 32px; height: 32px; }
+}
+
 /* ---------- lyrics ---------- */
+#lyrics { position: relative; flex: 1; min-width: 0; display: flex; container: lyrics / inline-size; }
 #viewport {
   position: relative;
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  /* 22%: FADE in main.js keeps plain lyrics' first and last lines clear of it. */
   -webkit-mask-image: linear-gradient(transparent, #000 22%, #000 78%, transparent);
           mask-image: linear-gradient(transparent, #000 22%, #000 78%, transparent);
 }
@@ -154,10 +192,31 @@ html, body {
    line just as it's sung. A thin stroke thickens the letters but keeps layout identical. */
 .line.active { color: var(--fg); -webkit-text-stroke: .035em currentColor; }
 .line.gap { opacity: .6; }
-#lines.unsynced .line.active { color: var(--fg-soft); }
 /* Sync mode: lyrics are frozen and scrollable; clicking a line syncs to it. */
-#app.syncing #lines { transition: none; }
+/* Plain lyrics follow the wheel directly; there's no line to glide to. */
+#app.syncing #lines, #lines.unsynced { transition: none; }
 #app.syncing #viewport { touch-action: none; }
+/* Lyrics without timestamps: a faint note over the top edge; the wheel passes through. */
+#plainHint {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  display: none;
+  font-size: 11px;
+  color: var(--muted);
+  text-shadow: var(--shadow);
+  opacity: .7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+#app.plain #plainHint { display: block; }
+#plainHint .scroll { display: none; }
+#app.plain-scroll #plainHint .scroll { display: inline; }
+/* Narrow lyrics column: "Unsynced · scroll". */
+@container lyrics (max-width: 170px) { #plainHint .wide { display: none; } }
 #app.syncing .line { cursor: pointer; border-radius: 6px; }
 #app.syncing .line:hover { background: var(--soft); color: var(--fg-soft); }
 
@@ -223,6 +282,7 @@ html, body {
   opacity: .5;
   transition: opacity .15s, background .15s;
   z-index: 3;
+  cursor: grab;
 }
 #handle svg { width: 12px; height: 12px; fill: currentColor; }
 #handle:hover, #app.open #handle { opacity: 1; background: var(--soft-hover); color: var(--fg); }
@@ -434,6 +494,7 @@ html, body {
 }
 .check:hover { background: rgba(255, 255, 255, .10); }
 .check:has(input:checked) { color: var(--fg); }
+.check:has(input:disabled) { opacity: .4; } /* keeps its tooltip; the input ignores clicks */
 .check input {
   appearance: none;
   -webkit-appearance: none;
@@ -460,8 +521,13 @@ html, body {
 .check input:checked { background: var(--accent); border-color: var(--accent); }
 .check input:checked::after { transform: rotate(45deg) scale(1); }
 .check input:focus-visible { outline: 2px solid rgba(255, 255, 255, .6); outline-offset: 1px; }
+/* Top row: the move bar fills it, Quit sits at its right end. */
+#topbar { flex: none; display: flex; align-items: center; gap: 8px; }
+#controls #quit { flex: none; padding: 0 7px; color: rgba(255, 255, 255, .7); background: transparent; }
+#controls #quit:hover { color: #fff; background: rgba(255, 80, 80, .35); }
 #drag {
-  flex: none;
+  flex: 1;
+  min-width: 0;
   padding: 1px 0 2px;
   overflow: hidden;
   white-space: nowrap;

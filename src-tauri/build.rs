@@ -6,6 +6,7 @@ fn main() {
             "get_settings",
             "update_settings",
             "toggle_play_pause",
+            "skip_track",
             "set_controls_open",
             "set_hit_rects",
             "refetch_lyrics",

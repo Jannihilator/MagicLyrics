@@ -43,13 +43,13 @@ function positionMs() {
   return rawPositionMs() + (state.lyrics.lyrics?.offsetMs || 0);
 }
 
-/** Start time of line `idx` on the lyrics timeline (estimated for unsynced lyrics). */
-function lineStartMs(idx) {
-  const l = state.lyrics.lyrics;
-  if (l.synced) return timed[idx].t;
-  const dur = state.track?.durationMs || 0;
-  return Math.round((idx / lineEls.length) * dur);
-}
+/** Start time of line `idx` on the lyrics timeline (synced lyrics only). */
+const lineStartMs = (idx) => timed[idx].t;
+
+/** Lyrics without timestamps: a plain list the user scrolls, never moved or highlighted. */
+const isPlain = () => state.lyrics.lyrics?.synced === false;
+/** Share of the lyrics viewport faded out at the top and at the bottom (its CSS mask). */
+const FADE = 0.22;
 
 // ------------------------------------------------------------------ rendering
 
@@ -63,9 +63,12 @@ function renderMeta() {
   const t = state.track;
   const l = state.lyrics.lyrics;
   // Controls bar: only the sync correction (if any); lyrics source goes in the tooltip.
-  $("meta").textContent = l?.offsetMs ? `sync ${fmtOffset(l.offsetMs)}` : "";
+  // Unsynced lyrics can't be synced (or reset) any more; ignore an offset saved for
+  // them by older versions.
+  $("meta").textContent = l?.synced && l.offsetMs ? `sync ${fmtOffset(l.offsetMs)}` : "";
   $("syncOffset").textContent = fmtOffset(l?.offsetMs || 0);
-  $("sync").disabled = !l || l.lines.length === 0 || l.instrumental;
+  $("sync").disabled = !l || l.lines.length === 0 || l.instrumental || !l.synced;
+  $("sync").title = l && !l.synced ? "These lyrics have no timing to fix" : "Fix lyrics timing: click the line you hear";
   $("drag").title = "Drag to move" + (l ? ` · lyrics: ${l.source}${l.synced ? "" : " (unsynced)"}` : "");
   $("songTitle").textContent = t?.title || "";
   $("songArtist").textContent = t?.artist || "";
@@ -77,6 +80,9 @@ function renderLyrics() {
   lineEls = [];
   timed = [];
   activeIdx = -2;
+  // No lines yet: drops the unsynced hint and, if they were scrollable, the
+  // lyrics' click area, even when this ends early with a status message.
+  updatePlain();
   setSyncing(false);
   setY(0);
 
@@ -109,29 +115,28 @@ function renderLyrics() {
     if (lyrics.synced) timed.push({ t: line.timeMs, el });
   }
   linesEl.appendChild(frag);
-  tick(true);
+  if (isPlain()) scrollLyrics(Infinity); // from the first line
+  else tick(true);
+  updatePlain();
 }
 
 function currentIndex() {
   const pos = positionMs();
   const l = state.lyrics.lyrics;
-  if (!l || lineEls.length === 0) return -1;
-  if (l.synced) {
-    // Last line whose start time has passed (binary search).
-    let lo = 0, hi = timed.length - 1, ans = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (timed[mid].t <= pos + LEAD_MS) { ans = mid; lo = mid + 1; } else hi = mid - 1;
-    }
-    return ans;
+  if (!l?.synced || lineEls.length === 0) return -1;
+  // Last line whose start time has passed (binary search).
+  let lo = 0, hi = timed.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (timed[mid].t <= pos + LEAD_MS) { ans = mid; lo = mid + 1; } else hi = mid - 1;
   }
-  // Unsynced: spread lines evenly over the song as a rough guide.
-  const dur = state.track?.durationMs || 0;
-  if (!dur) return 0;
-  return Math.min(lineEls.length - 1, Math.floor((pos / dur) * lineEls.length));
+  return ans;
 }
 
 function tick(force = false) {
+  // Plain lyrics stay where the user scrolled them; a forced tick (resize, text
+  // size) only keeps them in range.
+  if (isPlain()) { if (force) { scrollLyrics(curY); updatePlain(); } return; }
   const idx = currentIndex();
   if (idx === activeIdx && !force) return;
   if (lineEls[activeIdx]) lineEls[activeIdx].classList.remove("active");
@@ -153,6 +158,9 @@ const centeredY = (el) => viewport.clientHeight / 2 - (el.offsetTop + el.offsetH
 
 function renderPlayButton() {
   pp.innerHTML = state.playback?.playing ? ICON_PAUSE : ICON_PLAY;
+  // Greyed out when the player says it can't skip (e.g. a single video).
+  $("prev").disabled = state.playback?.canPrev === false;
+  $("next").disabled = state.playback?.canNext === false;
 }
 
 const THEME_LABEL = { auto: "Auto", light: "Light", dark: "Dark" };
@@ -235,6 +243,7 @@ function applySettings(s) {
   state.settings = s;
   app.classList.toggle("hide-art", !s.showArt);
   app.classList.toggle("hide-pp", !s.showPlayPause);
+  app.classList.toggle("show-skip", s.showSkip);
   app.classList.toggle("hide-title", !s.showTitle);
   applyFontSize(s.fontSize);
   applyOpacity(s.panelOpacity);
@@ -242,6 +251,10 @@ function applySettings(s) {
   $("optArt").checked = s.showArt;
   $("optTitle").checked = s.showTitle;
   $("optPP").checked = s.showPlayPause;
+  $("optSkip").checked = s.showSkip;
+  $("optSkip").disabled = !s.showPlayPause; // the buttons sit beside play/pause
+  $("optSkip").parentElement.title = s.showPlayPause
+    ? "Show previous / next buttons beside play" : "Turn on Play to show previous / next";
   applyTone();
   requestAnimationFrame(() => { tick(true); reportHandleRect(); });
 }
@@ -252,15 +265,18 @@ function applySettings(s) {
 // scaling, so it can differ from the window's scale factor.
 // While the handle is pressed the whole window stays clickable, so a quick drag
 // that leaves the small handle doesn't fall through to the app underneath.
-// The play button, when shown, is clickable too (no need to open the controls), and
+// The play button (with prev/next), when shown, is clickable too (no need to open the controls), and
 // so is the bottom-right resize corner (hidden where the OS can't drag-resize).
+// Plain (unsynced) lyrics take the mouse too, so they can be scrolled.
 // A drag that outruns these spots keeps the window clickable until the button is
 // released (see the hit tester in overlay.rs).
 let handlePressed = false;
 function reportHandleRect() {
+  const spots = [$("handle"), $("transport"), $("grip")];
+  if (scrollable()) spots.push(viewport);
   const boxes = handlePressed
     ? [{ left: 0, top: 0, width: innerWidth, height: innerHeight }]
-    : [$("handle"), pp, $("grip")].filter((el) => el.offsetParent !== null).map((el) => el.getBoundingClientRect());
+    : spots.filter((el) => el.offsetParent !== null).map((el) => el.getBoundingClientRect());
   const pad = 3;
   const k = window.devicePixelRatio || 1;
   invoke("set_hit_rects", {
@@ -347,8 +363,14 @@ function setSyncing(on) {
 
 function scrollLyrics(y) {
   if (!lineEls.length) return;
-  const first = centeredY(lineEls[0]), last = centeredY(lineEls[lineEls.length - 1]);
-  setY(Math.max(last, Math.min(first, y)));
+  // Synced lyrics scroll between their first and last line centered; plain lyrics
+  // read like a page, from the first line at the top to the last at the bottom,
+  // each kept clear of the viewport's faded edges.
+  const h = viewport.clientHeight;
+  const [top, bottom] = isPlain() && !syncing
+    ? [h * FADE, Math.min(h * FADE, h * (1 - FADE) - linesEl.offsetHeight)]
+    : [centeredY(lineEls[0]), centeredY(lineEls[lineEls.length - 1])];
+  setY(Math.max(bottom, Math.min(top, y)));
 }
 
 function setOffset(offsetMs) {
@@ -365,15 +387,31 @@ function syncTo(idx) {
   setOffset(Math.round(lineStartMs(idx) - rawPositionMs()));
 }
 
+// Plain lyrics scroll with the wheel or by dragging, without sync mode.
+// Only when they overflow: lyrics that fit leave the overlay click-through.
+const overflows = () => linesEl.offsetHeight > viewport.clientHeight * (1 - 2 * FADE);
+const scrollable = () => !syncing && lineEls.length > 0 && isPlain() && overflows();
+
+/** The unsynced hint, with "scroll" only when there's something to scroll. Also
+ *  re-reports the click spots when scrolling turns on or off (resize, text size). */
+function updatePlain() {
+  const plain = lineEls.length > 0 && isPlain();
+  const scroll = plain && overflows();
+  const changed = scroll !== app.classList.contains("plain-scroll");
+  app.classList.toggle("plain", plain);
+  app.classList.toggle("plain-scroll", scroll);
+  if (changed) reportHandleRect();
+}
+
 viewport.addEventListener("wheel", (e) => {
-  if (!syncing) return;
+  if (!syncing && !scrollable()) return;
   e.preventDefault();
   scrollLyrics(curY - e.deltaY);
 }, { passive: false });
 
 let lyricPress = null;
 viewport.addEventListener("pointerdown", (e) => {
-  if (!syncing || e.button !== 0) return;
+  if ((!syncing && !scrollable()) || e.button !== 0) return;
   lyricPress = { y: e.clientY, startY: curY, dragged: false };
   viewport.setPointerCapture(e.pointerId);
 });
@@ -385,7 +423,7 @@ viewport.addEventListener("pointermove", (e) => {
 viewport.addEventListener("pointerup", (e) => {
   const p = lyricPress;
   lyricPress = null;
-  if (!p || p.dragged) return;
+  if (!p || p.dragged || !syncing) return;
   // A click, not a drag: sync to the line under the pointer.
   const el = document.elementsFromPoint(e.clientX, e.clientY).find((n) => n.classList?.contains("line"));
   if (el) syncTo(Number(el.dataset.idx));
@@ -397,12 +435,16 @@ $("syncDone").addEventListener("click", () => setSyncing(false));
 $("syncReset").addEventListener("click", () => setOffset(0));
 
 pp.addEventListener("click", () => invoke("toggle_play_pause"));
+$("prev").addEventListener("click", () => invoke("skip_track", { next: false }));
+$("next").addEventListener("click", () => invoke("skip_track", { next: true }));
 $("optArt").addEventListener("change", async (e) =>
   applySettings(await invoke("update_settings", { showArt: e.target.checked })));
 $("optTitle").addEventListener("change", async (e) =>
   applySettings(await invoke("update_settings", { showTitle: e.target.checked })));
 $("optPP").addEventListener("change", async (e) =>
   applySettings(await invoke("update_settings", { showPlayPause: e.target.checked })));
+$("optSkip").addEventListener("change", async (e) =>
+  applySettings(await invoke("update_settings", { showSkip: e.target.checked })));
 // Sliders preview live while dragging and save when released.
 initSlider($("fontSize"));
 $("fontSize").addEventListener("input", (e) => { applyFontSize(+e.target.value); tick(true); peek(); });
@@ -539,7 +581,7 @@ async function init() {
   await listen("track", (e) => setTrack(e.payload));
   await listen("backdrop", (e) => { state.backdropLuma = e.payload; applyTone(); });
   await listen("art", (e) => { art.src = e.payload; });
-  await listen("lyrics", (e) => { state.lyrics = e.payload; renderLyrics(); });
+  await listen("lyrics", (e) => { state.lyrics = e.payload; renderLyrics(); reportHandleRect(); });
   await listen("playback", (e) => { state.playback = e.payload; renderPlayButton(); tick(); });
 
   reportHandleRect();

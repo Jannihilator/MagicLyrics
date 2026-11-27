@@ -193,6 +193,9 @@ fn parse(p: &Value, now_us: f64) -> Option<Snapshot> {
         },
         playing,
         position_ms: (pos_us / 1000.0) as u64,
+        // MediaRemote's now-playing info doesn't say; assume both work.
+        can_prev: true,
+        can_next: true,
     })
 }
 
@@ -221,6 +224,13 @@ impl MediaSource for MediaRemoteSource {
         let a = self.adapter.as_ref().ok_or("mediaremote-adapter not bundled")?;
         // 2 = kMRTogglePlayPause
         a.run(&["send", "2"], Duration::from_secs(3)).map(|_| ()).ok_or_else(|| "send failed".into())
+    }
+
+    fn skip(&mut self, next: bool) -> Result<(), String> {
+        let a = self.adapter.as_ref().ok_or("mediaremote-adapter not bundled")?;
+        // 4 = kMRNextTrack, 5 = kMRPreviousTrack
+        let cmd = if next { "4" } else { "5" };
+        a.run(&["send", cmd], Duration::from_secs(3)).map(|_| ()).ok_or_else(|| "send failed".into())
     }
 }
 

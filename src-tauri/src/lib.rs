@@ -32,6 +32,8 @@ pub struct Playback {
     position_ms: u64,
     /// Unix ms when `position_ms` was sampled; the UI extrapolates from here.
     sampled_at_ms: u64,
+    can_prev: bool,
+    can_next: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Default)]
@@ -91,6 +93,7 @@ fn update_settings(
     state: State<AppState>,
     show_art: Option<bool>,
     show_play_pause: Option<bool>,
+    show_skip: Option<bool>,
     show_title: Option<bool>,
     font_size: Option<u32>,
     theme: Option<String>,
@@ -103,6 +106,9 @@ fn update_settings(
     }
     if let Some(v) = show_play_pause {
         s.show_play_pause = v;
+    }
+    if let Some(v) = show_skip {
+        s.show_skip = v;
     }
     if let Some(v) = show_title {
         s.show_title = v;
@@ -127,6 +133,11 @@ fn update_settings(
 #[tauri::command]
 fn toggle_play_pause(state: State<AppState>) {
     let _ = state.media_tx.lock().unwrap().send(Command::TogglePlayPause);
+}
+
+#[tauri::command]
+fn skip_track(state: State<AppState>, next: bool) {
+    let _ = state.media_tx.lock().unwrap().send(Command::Skip { next });
 }
 
 #[tauri::command]
@@ -460,13 +471,19 @@ fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>) {
         // Art shown for the current track, and for the last track that had art.
         let mut cur_art: Option<ArtId> = None;
         let mut prev_art: Option<ArtId> = None;
-        let mut last: Option<(bool, u64, Instant)> = None;
+        let mut last: Option<(bool, u64, Instant, (bool, bool))> = None;
 
         loop {
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(Command::TogglePlayPause) => {
                     if let Err(e) = src.toggle_play_pause() {
                         eprintln!("[media] play/pause failed: {e}");
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                Ok(Command::Skip { next }) => {
+                    if let Err(e) = src.skip(next) {
+                        eprintln!("[media] skip failed: {e}");
                     }
                     std::thread::sleep(Duration::from_millis(150));
                 }
@@ -528,18 +545,28 @@ fn spawn_media_worker(app: AppHandle, rx: Receiver<Command>) {
                 }
             }
 
-            // Only notify the UI on play/pause or seeks; it interpolates in between.
+            // Only notify the UI on play/pause, seeks, or skip availability changing;
+            // it interpolates in between.
             let now = Instant::now();
+            let skips = (s.can_prev, s.can_next);
             let changed = match last {
                 None => true,
-                Some((was_playing, pos, at)) => {
+                Some((was_playing, pos, at, was_skips)) => {
                     let predicted = if was_playing { pos + now.duration_since(at).as_millis() as u64 } else { pos };
-                    was_playing != s.playing || (predicted as i64 - s.position_ms as i64).abs() > 750
+                    was_playing != s.playing
+                        || was_skips != skips
+                        || (predicted as i64 - s.position_ms as i64).abs() > 750
                 }
             };
             if changed {
-                last = Some((s.playing, s.position_ms, now));
-                let pb = Playback { playing: s.playing, position_ms: s.position_ms, sampled_at_ms: unix_ms() };
+                last = Some((s.playing, s.position_ms, now, skips));
+                let pb = Playback {
+                    playing: s.playing,
+                    position_ms: s.position_ms,
+                    sampled_at_ms: unix_ms(),
+                    can_prev: s.can_prev,
+                    can_next: s.can_next,
+                };
                 st.ui.lock().unwrap().playback = Some(pb.clone());
                 let _ = app.emit("playback", pb);
             }
@@ -694,6 +721,7 @@ pub fn run() {
             get_settings,
             update_settings,
             toggle_play_pause,
+            skip_track,
             set_controls_open,
             set_hit_rects,
             refetch_lyrics,

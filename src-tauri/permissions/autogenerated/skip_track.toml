@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-skip-track"
+description = "Enables the skip_track command without any pre-configured scope."
+commands.allow = ["skip_track"]
+
+[[permission]]
+identifier = "deny-skip-track"
+description = "Denies the skip_track command without any pre-configured scope."
+commands.deny = ["skip_track"]

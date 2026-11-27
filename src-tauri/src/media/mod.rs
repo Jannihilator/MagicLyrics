@@ -39,6 +39,9 @@ pub struct Snapshot {
     pub track: Track,
     pub playing: bool,
     pub position_ms: u64,
+    /// Whether the player accepts previous / next right now (true where unknown).
+    pub can_prev: bool,
+    pub can_next: bool,
 }
 
 pub trait MediaSource {
@@ -47,10 +50,13 @@ pub trait MediaSource {
     /// Album art bytes and MIME type for the current track.
     fn album_art(&mut self) -> Option<(Vec<u8>, String)>;
     fn toggle_play_pause(&mut self) -> Result<(), String>;
+    /// Skip to the next track, or back to the previous one.
+    fn skip(&mut self, next: bool) -> Result<(), String>;
 }
 
 pub enum Command {
     TogglePlayPause,
+    Skip { next: bool },
 }
 
 /// Pick the backend for this platform. Both follow whichever player most recently
@@ -77,12 +83,14 @@ pub fn new_source(resource_dir: Option<std::path::PathBuf>) -> Box<dyn MediaSour
 
 /// The track the user paused from the overlay. It stays followed (so the next
 /// press resumes it, even while a video plays on) until any player starts
-/// playing, the paused one included.
+/// playing, the paused one included. Skipping while held keeps following that
+/// player, whatever it moves on to.
 #[cfg(any(windows, test))]
 #[derive(Default)]
 pub struct Hold {
-    /// Source app, title, and the start counter when it was paused.
-    held: Option<(String, String, u64)>,
+    /// Source app, title (`None` after a skip: any title), and the start counter
+    /// when it was paused.
+    held: Option<(String, Option<String>, u64)>,
 }
 
 #[cfg(any(windows, test))]
@@ -91,17 +99,25 @@ impl Hold {
     /// the press; `starts` counts how often any player has started playing.
     pub fn toggled(&mut self, track: Option<&Track>, playing: bool, starts: u64) {
         self.held = match track {
-            Some(t) if playing => Some((t.source_app.clone(), t.title.clone(), starts)),
+            Some(t) if playing => Some((t.source_app.clone(), Some(t.title.clone()), starts)),
             _ => None,
         };
     }
 
+    /// The overlay skipped on `source_app`: if that's the held player, keep following
+    /// it through the title change.
+    pub fn skipped(&mut self, source_app: &str) {
+        if let Some(h) = self.held.as_mut().filter(|h| h.0 == source_app) {
+            h.1 = None;
+        }
+    }
+
     /// The held (source app, title), unless a player has started since.
-    pub fn current(&mut self, starts: u64) -> Option<(&str, &str)> {
+    pub fn current(&mut self, starts: u64) -> Option<(&str, Option<&str>)> {
         if self.held.as_ref().is_some_and(|h| h.2 != starts) {
             self.held = None;
         }
-        self.held.as_ref().map(|(a, t, _)| (a.as_str(), t.as_str()))
+        self.held.as_ref().map(|(a, t, _)| (a.as_str(), t.as_deref()))
     }
 }
 
@@ -109,12 +125,14 @@ impl Hold {
 /// (most recently started, playing before paused). The first one, unless it is a
 /// browser video that isn't a song: then the first song that is playing, or, when
 /// that video is paused too, the first song at all. `held` (source app, title) is
-/// a track the user just paused from the overlay; it stays chosen while present.
+/// a track the user just paused from the overlay; it stays chosen while present
+/// (any title from that app when the title is `None`).
 /// `None` only for an empty list.
 #[cfg(any(windows, test))]
-pub fn choose(ranked: &[Snapshot], held: Option<(&str, &str)>) -> Option<usize> {
+pub fn choose(ranked: &[Snapshot], held: Option<(&str, Option<&str>)>) -> Option<usize> {
     if let Some((app, title)) = held {
-        if let Some(i) = ranked.iter().position(|s| s.track.source_app == app && s.track.title == title) {
+        let matches = |s: &Snapshot| s.track.source_app == app && title.is_none_or(|t| s.track.title == t);
+        if let Some(i) = ranked.iter().position(matches) {
             return Some(i);
         }
     }
@@ -141,7 +159,7 @@ mod tests {
             source_app: app.into(),
             music: true,
         };
-        Snapshot { track, playing, position_ms: 0 }
+        Snapshot { track, playing, position_ms: 0, can_prev: true, can_next: true }
     }
 
     fn spotify(playing: bool) -> Snapshot {
@@ -184,7 +202,7 @@ mod tests {
     fn hold_lasts_until_a_player_starts() {
         let mut h = Hold::default();
         h.toggled(Some(&spotify(true).track), true, 4);
-        assert_eq!(h.current(4), Some(("Spotify.exe", "Some Song")));
+        assert_eq!(h.current(4), Some(("Spotify.exe", Some("Some Song"))));
         // Resumed from the overlay: no hold.
         h.toggled(Some(&spotify(false).track), false, 4);
         assert_eq!(h.current(4), None);
@@ -197,10 +215,24 @@ mod tests {
     #[test]
     fn song_paused_from_the_overlay_stays() {
         // Spotify paused with the overlay while a video keeps playing.
-        let held = Some(("Spotify.exe", "Some Song"));
+        let held = Some(("Spotify.exe", Some("Some Song")));
         assert_eq!(choose(&[vlog(true), spotify(false)], held), Some(1));
         // Gone (player closed): back to the usual choice.
         assert_eq!(choose(&[vlog(true)], held), Some(0));
+    }
+
+    #[test]
+    fn skip_while_held_keeps_following_the_player() {
+        // Spotify paused from the overlay, a video plays on, then next is pressed
+        // and Spotify stays paused on the next song.
+        let mut h = Hold::default();
+        h.toggled(Some(&spotify(true).track), true, 4);
+        h.skipped("Other.exe");
+        assert_eq!(h.current(4), Some(("Spotify.exe", Some("Some Song"))), "another app: unchanged");
+        h.skipped("Spotify.exe");
+        assert_eq!(h.current(4), Some(("Spotify.exe", None)));
+        let next = snap("Spotify.exe", "Next Song", "Artist", 200, false);
+        assert_eq!(choose(&[vlog(true), next], h.current(4)), Some(1));
     }
 }
 
@@ -232,6 +264,9 @@ impl MediaSource for Unsupported {
         None
     }
     fn toggle_play_pause(&mut self) -> Result<(), String> {
+        Err("media control is not implemented on this platform yet".into())
+    }
+    fn skip(&mut self, _next: bool) -> Result<(), String> {
         Err("media control is not implemented on this platform yet".into())
     }
 }
