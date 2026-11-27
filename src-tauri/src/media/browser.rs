@@ -184,6 +184,13 @@ fn cjk_bracketed(t: &str) -> Option<(String, String)> {
     None
 }
 
+/// Whether a track (as the player reported it, before [`refine`]) looks like a
+/// song. Always true for music players.
+#[cfg(any(windows, test))]
+pub fn is_music(t: &Track) -> bool {
+    !is_browser(&t.source_app) || classify(&t.title, &t.artist, &t.album, t.duration_ms).music
+}
+
 /// Mark the track as music or not, rewriting browser video metadata into artist / title.
 pub fn refine(mut t: Track) -> Track {
     if !is_browser(&t.source_app) {

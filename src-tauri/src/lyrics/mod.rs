@@ -10,11 +10,13 @@
 mod lrc;
 mod lrclib;
 mod lyricsovh;
+mod script;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 pub use lrc::parse_lrc;
+pub use script::{class, cjk_names, groups, has_cjk, has_kana_hangul, is_mixed, is_paired, looks_romanized, Class};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,17 +117,7 @@ pub fn normalize(s: &str) -> String {
 
 /// Han characters present and no Japanese kana / Korean hangul.
 pub fn is_chinese(s: &str) -> bool {
-    let mut han = false;
-    for c in s.chars() {
-        let u = c as u32;
-        if (0x3040..=0x30FF).contains(&u) || (0xAC00..=0xD7AF).contains(&u) {
-            return false;
-        }
-        if (0x4E00..=0x9FFF).contains(&u) || (0x3400..=0x4DBF).contains(&u) {
-            han = true;
-        }
-    }
-    han
+    class(s) == Class::Han
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -200,12 +192,11 @@ fn swapped(q: &Query) -> Option<Query> {
 }
 
 pub async fn find(client: &Client, q: &Query) -> Outcome {
-    let chinese = is_chinese(&q.title) || is_chinese(&q.artist);
     let mut first_plain: Option<Lyrics> = None;
     let mut reached_any = false;
     for v in variants(q) {
         match find_one(client, &v, &mut first_plain, &mut reached_any).await {
-            Some(l) => return Outcome::Found(finish(l, chinese)),
+            Some(l) => return Outcome::Found(finish(l, q)),
             None => {}
         }
     }
@@ -213,13 +204,13 @@ pub async fn find(client: &Client, q: &Query) -> Outcome {
     if first_plain.is_none() {
         for v in swapped(q).iter().flat_map(variants) {
             match find_one(client, &v, &mut first_plain, &mut reached_any).await {
-                Some(l) => return Outcome::Found(finish(l, chinese)),
+                Some(l) => return Outcome::Found(finish(l, q)),
                 None => {}
             }
         }
     }
     match first_plain {
-        Some(l) => Outcome::Found(finish(l, chinese)),
+        Some(l) => Outcome::Found(finish(l, q)),
         None if reached_any => Outcome::NotFound,
         None => Outcome::Offline,
     }
@@ -265,16 +256,111 @@ async fn find_one(
     None
 }
 
-fn finish(mut l: Lyrics, chinese: bool) -> Lyrics {
-    if !chinese {
-        // Some uploads interleave Chinese translations; drop them when they're the minority.
+/// What the lyrics themselves say about the song's language.
+#[derive(Debug)]
+struct SongScript {
+    /// A Chinese, Japanese or Korean song (see [`song_script`]).
+    cjk: bool,
+    /// Chinese in particular: CJK, with kana / hangul in under a fifth of the lines
+    /// (Japanese artists can have all-kanji names, such as 米津玄師).
+    chinese: bool,
+}
+
+/// The script most (70%+) of `classes` share: `Some(true)` for CJK, `Some(false)`
+/// for Latin; `None` when there are under three or they're mixed.
+fn vote(classes: &[Class]) -> Option<bool> {
+    let n = classes.len();
+    let cjk = classes.iter().filter(|c| matches!(c, Class::Han | Class::KanaHangul)).count();
+    if n < 3 {
+        None
+    } else if cjk * 10 >= n * 7 {
+        Some(true)
+    } else if (n - cjk) * 10 >= n * 7 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Is this a Chinese / Japanese / Korean song? Evidence, strongest first:
+/// 1. Latin lines that read as a romanization (romaji, pinyin…): yes.
+/// 2. In files pairing each line with its translation or romanization, the
+///    original conventionally comes first: the script that leads most pairs. (So a
+///    file that puts a Chinese translation *before* each English line is read as a
+///    Chinese song; that layout is rare.)
+/// 3. Lines with a timestamp to themselves, which have nothing beside them: their
+///    majority script. Only a tie-breaker, since untranslated lines are often
+///    English hooks ("Oh baby") in a Korean or Chinese song.
+/// 4. The player's names.
+fn song_script(lines: &[Line], q: &Query) -> SongScript {
+    let latin: Vec<&str> = lines.iter().map(|x| x.text.as_str()).filter(|t| class(t) == Class::Latin).collect();
+    let mut single = Vec::new();
+    let mut leading = Vec::new();
+    for g in groups(lines) {
+        let cs = script::classes(g);
+        if cs.len() == 1 {
+            single.push(cs[0]);
+        } else if is_mixed(g) {
+            leading.push(cs[0]);
+        }
+    }
+    let cjk = looks_romanized(&latin.join("\n")) || vote(&leading).or_else(|| vote(&single)).unwrap_or(cjk_names(q));
+    let non_empty = lines.iter().filter(|x| !x.text.is_empty()).count();
+    let jk = lines.iter().filter(|x| has_kana_hangul(&x.text)).count();
+    let chinese = !(jk > 0 && jk * 5 >= non_empty) && (cjk || is_chinese(&q.title) || is_chinese(&q.artist));
+    SongScript { cjk, chinese }
+}
+
+/// Files that pair their lines with a translation or romanization ([`is_paired`])
+/// keep one line per timestamp: for a CJK song the CJK line (Han first for Chinese,
+/// kana / hangul first otherwise); for any other song the Latin one, since the CJK
+/// line is then a translation. Lines in the same script (a duet, two short lines)
+/// all stay, as does everything in files that aren't paired (an English ad-lib
+/// beside a Korean line). Blank lines sharing a timestamp with text go.
+fn drop_paired_lines(lines: &mut Vec<Line>, song: &SongScript) {
+    let rank = |x: &Line| -> u8 {
+        match class(&x.text) {
+            Class::Blank => 0,
+            Class::Latin => if song.cjk { 1 } else { 4 },
+            Class::KanaHangul => if song.chinese { 2 } else { 3 },
+            Class::Han => if song.chinese { 3 } else { 2 },
+        }
+    };
+    let paired = is_paired(lines);
+    let mut out: Vec<Line> = Vec::with_capacity(lines.len());
+    for g in groups(lines) {
+        let text: Vec<&Line> = g.iter().filter(|x| class(&x.text) != Class::Blank).collect();
+        if text.is_empty() {
+            out.extend(g.iter().cloned());
+        } else if paired && is_mixed(g) {
+            // max_by_key keeps the last of equals; ties go to the earlier line.
+            out.push(text.iter().rev().max_by_key(|x| rank(x)).map(|x| (*x).clone()).unwrap());
+        } else {
+            out.extend(text.into_iter().cloned());
+        }
+    }
+    *lines = out;
+}
+
+/// Clean-up applied to every result, and again to cached ones (which may predate a
+/// rule). Running it twice changes nothing: once pairs are gone, the remaining lines
+/// carry the same verdict on the song's script.
+pub fn finish(mut l: Lyrics, q: &Query) -> Lyrics {
+    let song = song_script(&l.lines, q);
+    if l.synced {
+        drop_paired_lines(&mut l.lines, &song);
+    }
+    // Some uploads interleave Chinese translations; drop them when they're the
+    // minority. Not for songs with Chinese-script names, whose Han-only lines may be
+    // the original (Japanese written in kanji, by 米津玄師 say).
+    if !song.chinese && !is_chinese(&q.title) && !is_chinese(&q.artist) {
         let non_empty = l.lines.iter().filter(|x| !x.text.is_empty()).count();
         let han = l.lines.iter().filter(|x| is_chinese(&x.text)).count();
         if han > 0 && han * 5 < non_empty * 3 {
             l.lines.retain(|x| !is_chinese(&x.text));
         }
     }
-    if chinese {
+    if song.chinese {
         let all: String = l.lines.iter().map(|x| x.text.as_str()).collect::<Vec<_>>().join("\n");
         if zhconv::is_hans(&all) {
             for line in &mut l.lines {
@@ -391,6 +477,29 @@ mod tests {
         }
     }
 
+    /// Japanese / Korean songs come back in kana / hangul, not romanized.
+    #[test]
+    #[ignore]
+    fn live_original_script() {
+        for (title, artist, secs) in [
+            ("夜に駆ける", "YOASOBI", 261),
+            ("アイドル", "YOASOBI", 213),
+            ("Lemon", "米津玄師", 255),
+            ("밤양갱", "BIBI", 146),
+            // Romanized names, as some players report them.
+            ("Yoru ni Kakeru", "YOASOBI", 261),
+        ] {
+            match live(title, artist, "", secs) {
+                Outcome::Found(l) => {
+                    let all: String = l.lines.iter().map(|x| x.text.clone()).collect();
+                    println!("{title}: {} synced={} lines={}", l.source, l.synced, l.lines.len());
+                    assert!(has_kana_hangul(&all), "{title}: romanized");
+                }
+                _ => panic!("not found: {title}"),
+            }
+        }
+    }
+
     #[test]
     fn swap_only_without_album() {
         let q = Query { title: "周杰倫".into(), artist: "晴天".into(), album: "".into(), duration_ms: 0 };
@@ -439,6 +548,95 @@ mod tests {
                 Outcome::Found(l) => println!("{title}: {} synced={} lines={}", l.source, l.synced, l.lines.len()),
                 _ => panic!("not found: {g:?}"),
             }
+        }
+    }
+
+    fn timed(lines: &[(u64, &str)]) -> Vec<Line> {
+        lines.iter().map(|(t, s)| Line { time_ms: Some(*t), text: s.to_string() }).collect()
+    }
+
+    fn tidy(title: &str, artist: &str, lines: &[(u64, &str)]) -> Vec<String> {
+        let l = Lyrics { source: "t".into(), synced: true, instrumental: false, lines: timed(lines), offset_ms: 0 };
+        let q = Query { title: title.into(), artist: artist.into(), album: "".into(), duration_ms: 0 };
+        finish(l, &q).lines.into_iter().map(|x| x.text).collect()
+    }
+
+    // Made-up lines (not real lyrics).
+    const JA: [&str; 3] = ["朝の光に手を伸ばして", "君と歩いた帰り道", "ずっと一緒にいてくれるかな"];
+    const ROMAJI: [&str; 3] = ["Asa no hikari ni te wo nobashite", "Kimi to aruita kaerimichi", "Zutto issho ni ite kureru kana"];
+    const ZH: [&str; 3] = ["我在這裡等你回來", "窗外的雨下不停", "想念你的晚上"];
+    const PINYIN: [&str; 3] = ["Wo zai zhe li deng ni hui lai", "Chuang wai de yu xia bu ting", "Xiang nian ni de wan shang"];
+    const KO: [&str; 3] = ["조용한 아침을 천천히 걸어", "부엌 식탁 위에 쏟아진 커피", "이 밤이 이렇게 끝날 줄 몰랐어"];
+    const EN: [&str; 3] = ["Walking slowly through the quiet morning", "Coffee spilled across the kitchen table", "I never thought the night would end like this"];
+
+    /// Pair `a[i]` and `b[i]` under the same timestamp, `a` first.
+    fn paired<'a>(a: &[&'a str; 3], b: &[&'a str; 3]) -> Vec<(u64, &'a str)> {
+        (0..3).flat_map(|i| [(i as u64 * 1000, a[i]), (i as u64 * 1000, b[i])]).collect()
+    }
+
+    #[test]
+    fn paired_lines_keep_original_script() {
+        // Japanese + romaji, either order, whether or not the names are Japanese.
+        for (title, artist) in [("夜の歌", "誰か"), ("Yoru no Uta", "Someone")] {
+            assert_eq!(tidy(title, artist, &paired(&JA, &ROMAJI)), JA, "{title}");
+            assert_eq!(tidy(title, artist, &paired(&ROMAJI, &JA)), JA, "{title}");
+        }
+        // Chinese + pinyin, also under English names.
+        assert_eq!(tidy("等你", "某人", &paired(&PINYIN, &ZH)), ZH);
+        assert_eq!(tidy("Waiting", "Someone", &paired(&PINYIN, &ZH)), ZH);
+        // Japanese + Chinese translation: kana wins, even for an all-kanji artist name.
+        assert_eq!(tidy("夜の歌", "米津玄師", &paired(&ZH, &JA)), JA);
+        // English + translation after each line: English stays.
+        for tr in [&ZH, &JA] {
+            assert_eq!(tidy("Morning", "Someone", &paired(&EN, tr)), EN);
+        }
+        // Chinese or Japanese song under English names, English translation after
+        // each line: the original stays.
+        assert_eq!(tidy("Waiting", "Someone", &paired(&ZH, &EN)), ZH);
+        assert_eq!(tidy("Morning", "Someone", &paired(&JA, &EN)), JA);
+        // English song by an artist with a hangul name, Korean translation after each line.
+        assert_eq!(tidy("Morning", "아무개", &paired(&EN, &KO)), EN);
+        // Korean song with untranslated English hooks: the pairs' order decides.
+        let mut v: Vec<(u64, &str)> = paired(&KO, &EN);
+        v.extend([(5000, "Oh baby"), (6000, "Yeah yeah yeah"), (7000, "Come on now")]);
+        assert_eq!(tidy("Morning", "Someone", &v)[..3], KO);
+        assert_eq!(tidy("밤의 노래", "아무개", &v)[..3], KO);
+        // No consistent order: untranslated lines break the tie.
+        let mut v = vec![(0, EN[0]), (0, JA[0]), (1000, JA[1]), (1000, EN[1]), (2000, EN[2]), (2000, JA[2])];
+        v.extend([(5000, "夜の道を一人で"), (6000, "名前を呼んで"), (7000, "まだ遠い")]);
+        assert_eq!(tidy("Morning", "Someone", &v)[..3], JA);
+        // A blank line sharing a timestamp never replaces text.
+        assert_eq!(tidy("Morning", "Someone", &[(1000, "Line"), (1000, "")]), ["Line"]);
+    }
+
+    #[test]
+    fn unpaired_files_keep_ad_libs() {
+        let v = [(0, KO[0]), (1000, KO[1]), (1000, "(Yeah)"), (2000, KO[2]), (3000, "하늘 아래"), (4000, "너와 함께")];
+        assert_eq!(tidy("밤의 노래", "아무개", &v).len(), 6);
+    }
+
+    #[test]
+    fn kanji_only_lines_of_japanese_songs_stay() {
+        let v = [(0, JA[0]), (1000, "運命"), (2000, JA[1]), (3000, "永遠"), (4000, JA[2])];
+        assert_eq!(tidy("Lemon", "米津玄師", &v).len(), 5);
+    }
+
+    #[test]
+    fn same_script_lines_at_one_time_all_stay() {
+        let v = [(1000, "Walking slowly"), (1000, "Through the morning"), (2000, "朝の光に"), (2000, "君と歩いた")];
+        assert_eq!(tidy("Morning", "Someone", &v), ["Walking slowly", "Through the morning", "朝の光に", "君と歩いた"]);
+    }
+
+    #[test]
+    fn finish_twice_is_finish_once() {
+        for (title, artist, lines) in [
+            ("Waiting", "Someone", paired(&PINYIN, &ZH)),
+            ("Morning", "Someone", paired(&EN, &ZH)),
+            ("Yoru no Uta", "Someone", paired(&JA, &ROMAJI)),
+        ] {
+            let once = tidy(title, artist, &lines);
+            let refs: Vec<(u64, &str)> = (0..once.len()).map(|i| (i as u64 * 1000, once[i].as_str())).collect();
+            assert_eq!(tidy(title, artist, &refs), once, "{title}");
         }
     }
 

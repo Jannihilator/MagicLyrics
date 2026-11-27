@@ -22,24 +22,31 @@ struct Seen {
 }
 
 /// Follows whichever player most recently started playing (like macOS's Now Playing),
-/// and keeps showing it while paused until another one starts.
+/// and keeps showing it while paused until another one starts. A browser video that
+/// isn't a song doesn't take over from music that is still playing (see
+/// [`super::choose`]).
 pub struct GsmtcSource {
     manager: Option<Manager>,
     session: Option<Session>,
     seen: HashMap<String, Seen>,
     seq: u64,
+    /// The track paused from the overlay (see [`super::Hold`]).
+    hold: super::Hold,
 }
 
 impl GsmtcSource {
     pub fn new() -> Self {
-        Self { manager: None, session: None, seen: HashMap::new(), seq: 0 }
+        Self { manager: None, session: None, seen: HashMap::new(), seq: 0, hold: super::Hold::default() }
     }
 
-    fn pick_session(&mut self) -> Option<Session> {
+    /// Sessions worth following, best first: a playing app beats a paused one,
+    /// then the most recently started. Sessions that haven't played since launch
+    /// are left out; when that leaves none, whatever Windows shows as current.
+    fn ranked_sessions(&mut self) -> Vec<Session> {
         if self.manager.is_none() {
-            self.manager = Manager::RequestAsync().ok()?.get().ok();
+            self.manager = Manager::RequestAsync().ok().and_then(|op| op.get().ok());
         }
-        let mgr = self.manager.as_ref()?;
+        let Some(mgr) = self.manager.as_ref() else { return Vec::new() };
         let current = mgr.GetCurrentSession().ok();
         let current_id = current.as_ref().map(app_id).unwrap_or_default();
 
@@ -51,9 +58,9 @@ impl GsmtcSource {
                 }
             }
         }
-        // Handle the system's current session last so it wins ties (e.g. several
-        // players already playing when we start).
-        sessions.sort_by_key(|(id, _, _)| *id == current_id);
+        // The system's current session goes first so it wins ties (e.g. several
+        // players already playing when we start); the sort below is stable.
+        sessions.sort_by_key(|(id, _, _)| *id != current_id);
 
         // Several sessions can share an app id (browser tabs): the app counts as
         // playing if any of them is.
@@ -74,17 +81,15 @@ impl GsmtcSource {
             e.playing = *playing;
         }
 
-        // A playing app beats a paused one; among those, the most recently started wins.
         let rank = |id: &str| self.seen.get(id).map(|e| (e.playing, e.started)).unwrap_or((false, 0));
-        let best = sessions
-            .iter()
-            .filter(|(id, _, _)| rank(id).1 > 0)
-            .max_by_key(|(id, playing, _)| (rank(id), *playing));
-        match best {
-            Some((_, _, s)) => Some(s.clone()),
+        let mut ranked: Vec<(String, bool, Session)> =
+            sessions.into_iter().filter(|(id, _, _)| rank(id).1 > 0).collect();
+        ranked.sort_by_key(|(id, playing, _)| std::cmp::Reverse((rank(id), *playing)));
+        if ranked.is_empty() {
             // Nothing has played since launch: fall back to what Windows shows.
-            None => current,
+            return current.into_iter().collect();
         }
+        ranked.into_iter().map(|(_, _, s)| s).collect()
     }
 }
 
@@ -101,53 +106,83 @@ fn now_ticks() -> i64 {
     ms * 10_000 + EPOCH_DIFF_TICKS
 }
 
-impl MediaSource for GsmtcSource {
-    fn snapshot(&mut self) -> Option<Snapshot> {
-        let session = self.pick_session();
-        self.session = session.clone();
-        let s = session?;
+/// Track and position of one session; `None` when it reports no title.
+fn read(s: &Session) -> Option<Snapshot> {
+    let props = s.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
+    let title = props.Title().map(|h| h.to_string()).unwrap_or_default();
+    if title.trim().is_empty() {
+        return None;
+    }
+    let artist = props.Artist().map(|h| h.to_string()).unwrap_or_default();
+    let album = props.AlbumTitle().map(|h| h.to_string()).unwrap_or_default();
+    let source_app = app_id(s);
+    let playing = is_playing(s);
 
-        let props = s.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
-        let title = props.Title().map(|h| h.to_string()).unwrap_or_default();
-        if title.trim().is_empty() {
-            return None;
+    let (mut pos_ticks, end_ticks, updated) = match s.GetTimelineProperties() {
+        Ok(t) => (
+            t.Position().map(|d| d.Duration).unwrap_or(0),
+            t.EndTime().map(|d| d.Duration).unwrap_or(0),
+            t.LastUpdatedTime().map(|d| d.UniversalTime).unwrap_or(0),
+        ),
+        Err(_) => (0, 0, 0),
+    };
+    // The timeline is a sample taken at `updated`; extrapolate to now while playing.
+    if playing && updated > 0 {
+        let elapsed = now_ticks() - updated;
+        if elapsed > 0 && elapsed < 24 * 3600 * 10_000_000 {
+            pos_ticks += elapsed;
         }
-        let artist = props.Artist().map(|h| h.to_string()).unwrap_or_default();
-        let album = props.AlbumTitle().map(|h| h.to_string()).unwrap_or_default();
-        let source_app = app_id(&s);
-        let playing = is_playing(&s);
+    }
+    if end_ticks > 0 {
+        pos_ticks = pos_ticks.min(end_ticks);
+    }
 
-        let (mut pos_ticks, end_ticks, updated) = match s.GetTimelineProperties() {
-            Ok(t) => (
-                t.Position().map(|d| d.Duration).unwrap_or(0),
-                t.EndTime().map(|d| d.Duration).unwrap_or(0),
-                t.LastUpdatedTime().map(|d| d.UniversalTime).unwrap_or(0),
-            ),
-            Err(_) => (0, 0, 0),
-        };
-        // The timeline is a sample taken at `updated`; extrapolate to now while playing.
-        if playing && updated > 0 {
-            let elapsed = now_ticks() - updated;
-            if elapsed > 0 && elapsed < 24 * 3600 * 10_000_000 {
-                pos_ticks += elapsed;
+    Some(Snapshot {
+        track: Track {
+            title,
+            artist,
+            album,
+            duration_ms: (end_ticks.max(0) / 10_000) as u64,
+            source_app,
+            music: true,
+        },
+        playing,
+        position_ms: (pos_ticks.max(0) / 10_000) as u64,
+    })
+}
+
+impl MediaSource for GsmtcSource {
+    /// The best-ranked session, except that a browser video that isn't a song
+    /// (a vlog, a trailer) doesn't take over from a music player or music tab:
+    /// the highest-ranked one that looks like a song wins instead.
+    fn snapshot(&mut self) -> Option<Snapshot> {
+        let ranked = self.ranked_sessions();
+        let holding = self.hold.current(self.seq).is_some();
+        let mut read_ok: Vec<(Session, Snapshot)> = Vec::new();
+        for (i, s) in ranked.into_iter().enumerate() {
+            let Some(snap) = read(&s) else {
+                // The player everything else ranks below has no title (e.g. between
+                // tracks): show nothing for now rather than jump to another player.
+                if i == 0 {
+                    break;
+                }
+                continue;
+            };
+            // The usual case: the best session is a song, so the rest needn't be read.
+            let done = read_ok.is_empty() && !holding && super::browser::is_music(&snap.track);
+            read_ok.push((s, snap));
+            if done {
+                break;
             }
         }
-        if end_ticks > 0 {
-            pos_ticks = pos_ticks.min(end_ticks);
-        }
-
-        Some(Snapshot {
-            track: Track {
-                title,
-                artist,
-                album,
-                duration_ms: (end_ticks.max(0) / 10_000) as u64,
-                source_app,
-                music: true,
-            },
-            playing,
-            position_ms: (pos_ticks.max(0) / 10_000) as u64,
-        })
+        let snaps: Vec<Snapshot> = read_ok.iter().map(|(_, snap)| snap.clone()).collect();
+        let Some(i) = super::choose(&snaps, self.hold.current(self.seq)) else {
+            self.session = None;
+            return None;
+        };
+        let (s, snap) = read_ok.swap_remove(i);
+        self.session = Some(s);
+        Some(snap)
     }
 
     fn album_art(&mut self) -> Option<(Vec<u8>, String)> {
@@ -171,8 +206,9 @@ impl MediaSource for GsmtcSource {
     fn toggle_play_pause(&mut self) -> Result<(), String> {
         let s = match self.session.clone() {
             Some(s) => s,
-            None => self.pick_session().ok_or("no media session")?,
+            None => self.ranked_sessions().into_iter().next().ok_or("no media session")?,
         };
+        self.hold.toggled(read(&s).as_ref().map(|snap| &snap.track), is_playing(&s), self.seq);
         s.TryTogglePlayPauseAsync()
             .and_then(|op| op.get())
             .map(|_| ())

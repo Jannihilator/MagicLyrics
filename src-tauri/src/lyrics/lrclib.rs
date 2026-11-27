@@ -22,9 +22,56 @@ struct Record {
 fn variant_ok(candidate_title: &str, wanted_title: &str) -> bool {
     let c = candidate_title.to_lowercase();
     let w = wanted_title.to_lowercase();
-    ["instrumental", "karaoke", "sped up", "slowed", "nightcore", "8d audio", "reverb"]
-        .iter()
+    [
+        "instrumental", "karaoke", "sped up", "slowed", "nightcore", "8d audio", "reverb",
+        "japanese ver", "korean ver", "chinese ver", "english ver",
+    ]
+    .iter()
         .all(|k| !c.contains(k) || w.contains(k))
+}
+
+/// Romanized / translated uploads ("Song (Romanized)", "Genius Romanizations",
+/// "歌名 (中文翻譯)"). A keyword the playing title or artist itself contains doesn't
+/// count, so a song called "Lost in Translation" is still found.
+fn is_transliteration(r: &Record, q: &Query) -> bool {
+    let name = format!("{} {}", r.track_name.as_deref().unwrap_or(""), r.artist_name.as_deref().unwrap_or("")).to_lowercase();
+    let wanted = format!("{} {}", q.title, q.artist).to_lowercase();
+    [
+        "romaniz", "romanis", "romaji", "rōmaji", "translation", "translated", "pinyin",
+        "翻譯", "翻译", "中譯", "中译", "羅馬音", "罗马音", "羅馬拼音", "罗马拼音",
+    ]
+    .iter()
+    .any(|k| name.contains(k) && !wanted.contains(k))
+}
+
+/// The lyrics as shown (after LRC parsing, which drops credit lines like "作词 : …").
+fn lyric_text(r: &Record) -> String {
+    to_lyrics(r).map(|l| l.lines.iter().map(|x| x.text.as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+}
+
+/// A romanization rather than the original lyrics.
+fn romanized(r: &Record) -> bool {
+    super::looks_romanized(&lyric_text(r))
+}
+
+/// Lyrics with a translation or romanization alongside each line ([`super::is_paired`]).
+fn paired(r: &Record) -> bool {
+    to_lyrics(r).is_some_and(|l| l.synced && super::is_paired(&l.lines))
+}
+
+/// Original script first, then synced over plain, then clean over paired with a
+/// translation.
+fn quality(r: &Record) -> (bool, bool, bool) {
+    (!romanized(r), to_lyrics(r).is_some_and(|l| l.synced), !paired(r))
+}
+
+/// The search's best record or the exact signature match, whichever is better;
+/// the exact match wins ties, being this very recording.
+fn choose(best: Option<Record>, exact: Option<Record>) -> Option<Record> {
+    match (best, exact) {
+        (Some(b), Some(e)) => Some(if quality(&b) > quality(&e) { b } else { e }),
+        (b, e) => b.or(e),
+    }
 }
 
 fn to_lyrics(r: &Record) -> Option<Lyrics> {
@@ -42,10 +89,11 @@ fn to_lyrics(r: &Record) -> Option<Lyrics> {
 
 pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String> {
     let dur_s = q.duration_ms / 1000;
-    let mut exact_plain: Option<Lyrics> = None;
+    let mut exact: Option<Record> = None;
 
     // 1) Exact signature match (fast, most accurate) when duration is known.
-    //    Only a synced hit ends the search; a plain one is kept as a fallback.
+    //    Only a clean synced hit in the song's own script ends the search; anything
+    //    else (plain, romanized, or with a translation alongside) is a fallback.
     if dur_s > 0 {
         let resp = client
             .get("https://lrclib.net/api/get")
@@ -61,8 +109,11 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
         if resp.status().is_success() {
             if let Ok(r) = resp.json::<Record>().await {
                 match to_lyrics(&r) {
-                    Some(l) if l.synced || l.instrumental => return Ok(Some(l)),
-                    other => exact_plain = other,
+                    Some(l) if (l.synced && !romanized(&r) && !paired(&r) && !is_transliteration(&r, q)) || l.instrumental => {
+                        return Ok(Some(l))
+                    }
+                    Some(_) if !is_transliteration(&r, q) => exact = Some(r),
+                    _ => {}
                 }
             }
         } else if resp.status() != StatusCode::NOT_FOUND {
@@ -81,10 +132,10 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
     //    Chinese title that matches exactly with a near-identical duration (the same
     //    recording listed under another name); never for other titles, where common
     //    names like "Hello" would pull in unrelated songs.
-    if !best.as_ref().is_some_and(|r| r.synced_lyrics.is_some()) {
+    if !best.as_ref().is_some_and(|r| quality(r) == (true, true, true)) {
         let loose = dur_s > 0 && super::is_chinese(&title);
         if let Some(r) = pick(&search(client, &[("track_name", &title)]).await?, q, &title, &artist, loose) {
-            if best.is_none() || r.synced_lyrics.is_some() {
+            if best.as_ref().map_or(true, |b| quality(&r) > quality(b)) {
                 best = Some(r);
             }
         }
@@ -94,7 +145,7 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
     //    ("Loneliness") that LRCLIB only lists as 寂寞邊界. When the player reports
     //    the album, take the one song on that album with the same length (±2 s), then
     //    search again under its real title for a synced copy.
-    if best.is_none() && exact_plain.is_none() && dur_s > 0 && !q.album.trim().is_empty() {
+    if best.is_none() && exact.is_none() && dur_s > 0 && !q.album.trim().is_empty() {
         if let Some(hit) = album_match(&search(client, &[("q", q.album.trim())]).await?, q) {
             let real = super::clean_title(hit.track_name.as_deref().unwrap_or(""));
             let real_artist = hit.artist_name.clone().unwrap_or_default();
@@ -105,12 +156,7 @@ pub async fn fetch(client: &Client, q: &Query) -> Result<Option<Lyrics>, String>
             };
         }
     }
-    let found = best.and_then(|r| to_lyrics(&r));
-    Ok(match (found, exact_plain) {
-        (Some(f), _) if f.synced => Some(f),
-        (_, Some(e)) => Some(e),
-        (f, None) => f,
-    })
+    Ok(choose(best, exact).and_then(|r| to_lyrics(&r)))
 }
 
 /// The single song on the query's album whose length is within 2 s. `None` when
@@ -125,6 +171,7 @@ fn album_match(records: &[Record], q: &Query) -> Option<Record> {
                 && norm(r.album_name.as_deref().unwrap_or("")) == want_album
                 && r.duration.is_some_and(|d| (d - dur).abs() <= 2.0)
                 && variant_ok(r.track_name.as_deref().unwrap_or(""), &q.title)
+                && !is_transliteration(r, q)
                 && to_lyrics(r).is_some()
         })
         .collect();
@@ -162,6 +209,7 @@ fn pick(records: &[Record], q: &Query, title: &str, artist: &str, loose_artist: 
     let dur_s = q.duration_ms / 1000;
     let want_title = norm(title);
     let want_artist = norm(artist);
+    let cjk_names = super::cjk_names(q);
     let score = |r: &Record| -> Option<i64> {
         let t = norm(&super::clean_title(r.track_name.as_deref().unwrap_or("")));
         let a = norm(r.artist_name.as_deref().unwrap_or(""));
@@ -174,7 +222,7 @@ fn pick(records: &[Record], q: &Query, title: &str, artist: &str, loose_artist: 
         if !artist_ok && !(loose_artist && t == want_title) {
             return None;
         }
-        if !variant_ok(r.track_name.as_deref().unwrap_or(""), &q.title) {
+        if !variant_ok(r.track_name.as_deref().unwrap_or(""), &q.title) || is_transliteration(r, q) {
             return None;
         }
         let mut s = 0i64;
@@ -193,6 +241,18 @@ fn pick(records: &[Record], q: &Query, title: &str, artist: &str, loose_artist: 
         }
         if t == want_title {
             s += 100;
+        }
+        // A romanized copy loses to the original even when the original isn't
+        // synced. Between otherwise equal copies, a clean one beats one with a
+        // translation alongside, and for a song with CJK names a CJK copy beats a
+        // Latin one (which may be a translation, or the song may be in English).
+        if romanized(r) {
+            s -= 1200;
+        } else if cjk_names && !super::has_cjk(&lyric_text(r)) {
+            s -= 150;
+        }
+        if paired(r) {
+            s -= 200;
         }
         Some(s)
     };
@@ -256,6 +316,118 @@ mod tests {
         let mut other = rec("寂寞邊界", "x", 271.0, false);
         other.album_name = Some("Other".into());
         assert!(album_match(&[other], &qq).is_none());
+    }
+
+    fn with_text(mut r: Record, synced: &str) -> Record {
+        r.plain_lyrics = Some(synced.lines().map(|l| l.split(']').last().unwrap_or("")).collect::<Vec<_>>().join("\n"));
+        r.synced_lyrics = Some(synced.into());
+        r
+    }
+
+    // Made-up lines (not real lyrics).
+    const ROMAJI: &str = "[00:01.00]Asa no hikari ni te wo nobashite\n[00:02.00]Kimi to aruita kaerimichi\n[00:03.00]Zutto issho ni ite kureru kana";
+    const KANA: &str = "[00:01.00]朝の光に手を伸ばして\n[00:02.00]君と歩いた帰り道\n[00:03.00]ずっと一緒にいてくれるかな";
+    const ENGLISH: &str = "[00:01.00]Walking slowly through the quiet morning\n[00:02.00]Coffee spilled across the kitchen table\n[00:03.00]I never thought the night would end like this";
+    /// English song, Japanese translation interleaved line by line.
+    const EN_WITH_JA: &str = "[00:01.00]Walking slowly through the quiet morning\n[00:01.00]朝の光に手を伸ばして\n[00:02.00]Coffee spilled across the kitchen table\n[00:02.00]君と歩いた帰り道";
+
+    fn kana(r: &Record) -> bool {
+        super::super::has_kana_hangul(&lyric_text(r))
+    }
+
+    #[test]
+    fn prefers_original_script_over_romaji() {
+        // Romanized player names: the romaji copy reads as a romanization and loses.
+        for order in [[ROMAJI, KANA], [KANA, ROMAJI]] {
+            let rs = order.map(|t| with_text(rec("Yoru no Uta", "Someone", 261.0, true), t));
+            let r = pick(&rs, &q("Yoru no Uta", "Someone", 261), "Yoru no Uta", "Someone", false).unwrap();
+            assert!(kana(&r));
+        }
+        // Japanese names: an unsynced original beats a synced romanization.
+        let mut plain = rec("夜の歌", "誰か", 261.0, false);
+        plain.plain_lyrics = Some("朝の光に手を伸ばして\n君と歩いた帰り道\nずっと一緒にいてくれるかな".into());
+        let rs = [with_text(rec("夜の歌", "誰か", 261.0, true), ROMAJI), plain];
+        let r = pick(&rs, &q("夜の歌", "誰か", 261), "夜の歌", "誰か", false).unwrap();
+        assert!(r.synced_lyrics.is_none());
+    }
+
+    fn first_line(r: &Record) -> String {
+        to_lyrics(r).and_then(|l| l.lines.first().map(|x| x.text.clone())).unwrap_or_default()
+    }
+
+    #[test]
+    fn english_song_keeps_english_copy() {
+        // A copy with a Japanese translation alongside loses to the plain English one,
+        // also for an artist with a CJK name.
+        for artist in ["Someone", "誰か"] {
+            for order in [[ENGLISH, EN_WITH_JA], [EN_WITH_JA, ENGLISH]] {
+                let rs = order.map(|t| with_text(rec("Morning", artist, 200.0, true), t));
+                let r = pick(&rs, &q("Morning", artist, 200), "Morning", artist, false).unwrap();
+                assert!(!paired(&r), "{artist}");
+            }
+        }
+        assert!(paired(&with_text(rec("Morning", "Someone", 200.0, true), EN_WITH_JA)));
+        assert!(!paired(&with_text(rec("Morning", "Someone", 200.0, true), ENGLISH)));
+    }
+
+    #[test]
+    fn cjk_names_prefer_cjk_copy() {
+        let rs = [with_text(rec("夜の歌", "誰か", 261.0, true), ENGLISH), with_text(rec("夜の歌", "誰か", 261.0, true), KANA)];
+        let r = pick(&rs, &q("夜の歌", "誰か", 261), "夜の歌", "誰か", false).unwrap();
+        assert!(kana(&r), "got {}", first_line(&r));
+    }
+
+    #[test]
+    fn clean_copy_beats_paired_exact_match() {
+        let clean = with_text(rec("Morning", "Someone", 200.0, true), ENGLISH);
+        let mut exact = with_text(rec("Morning", "Someone", 200.0, true), EN_WITH_JA);
+        exact.album_name = Some("Exact".into());
+        assert!(!paired(&choose(Some(clean), Some(exact)).unwrap()));
+    }
+
+    #[test]
+    fn exact_match_loses_only_to_better_script() {
+        let romaji = with_text(rec("Yoru no Uta", "Someone", 261.0, true), ROMAJI);
+        let mut kana_plain = rec("Yoru no Uta", "Someone", 261.0, false);
+        kana_plain.plain_lyrics = Some("朝の光に手を伸ばして\n君と歩いた帰り道\nずっと一緒にいてくれるかな".into());
+        // Synced romaji exact hit vs unsynced original from the search: the original.
+        let r = choose(Some(kana_plain.clone()), Some(romaji.clone())).unwrap();
+        assert!(kana(&r));
+        // Equal quality: the exact match.
+        let mut exact = with_text(rec("Yoru no Uta", "Someone", 261.0, true), KANA);
+        exact.album_name = Some("Exact".into());
+        let r = choose(Some(with_text(rec("Yoru no Uta", "Someone", 261.0, true), KANA)), Some(exact)).unwrap();
+        assert_eq!(r.album_name.as_deref(), Some("Exact"));
+        assert!(choose(None, Some(romaji)).is_some());
+    }
+
+    #[test]
+    fn skips_romanization_uploads() {
+        let rs = [with_text(rec("夜の歌 (Romanized)", "Genius Romanizations", 261.0, true), ROMAJI)];
+        assert!(pick(&rs, &q("夜の歌", "誰か", 261), "夜の歌", "", false).is_none());
+        let rs = [with_text(rec("Morning (中文翻譯)", "Someone", 200.0, true), ENGLISH)];
+        assert!(pick(&rs, &q("Morning", "Someone", 200), "Morning", "Someone", false).is_none());
+    }
+
+    #[test]
+    fn translation_in_the_real_title_is_fine() {
+        let rs = [with_text(rec("Lost in Translation", "Someone", 200.0, true), ENGLISH)];
+        let qq = q("Lost in Translation", "Someone", 200);
+        assert!(pick(&rs, &qq, "Lost in Translation", "Someone", false).is_some());
+    }
+
+    #[test]
+    fn credit_lines_do_not_hide_romaji() {
+        let r = with_text(rec("夜の歌", "誰か", 261.0, true), &format!("[00:00.00]作词 : 某人\n{ROMAJI}"));
+        assert!(romanized(&r));
+    }
+
+    #[test]
+    fn language_versions_need_asking_for() {
+        let rs = [with_text(rec("Morning (Japanese Ver.)", "Someone", 200.0, true), KANA)];
+        assert!(pick(&rs, &q("Morning", "Someone", 200), "Morning", "Someone", false).is_none());
+        let qq = q("Morning (Japanese Ver.)", "Someone", 200);
+        assert!(pick(&rs, &qq, "Morning", "Someone", false).is_some());
     }
 
     #[test]

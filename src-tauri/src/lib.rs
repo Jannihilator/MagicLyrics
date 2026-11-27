@@ -159,7 +159,7 @@ fn set_lyrics_offset(state: State<AppState>, offset_ms: i64) {
     let Some(track) = ui.track.clone() else { return };
     if let Some(l) = ui.lyrics.lyrics.as_mut() {
         l.offset_ms = offset_ms;
-        state.cache.put(&query_for(&track), Some(l));
+        state.cache.update(&query_for(&track), l);
     }
 }
 
@@ -280,28 +280,129 @@ fn start_lyrics(app: &AppHandle, track: Track) {
         return set_lyrics(app, gen, "notMusic", None);
     }
     let q = query_for(&track);
-    match st.cache.get(&q) {
-        Cached::Hit(l) => return set_lyrics(app, gen, "found", Some(l)),
+    // Lyrics cached under older lookup rules: shown right away, looked up again
+    // in the background, and kept if that finds nothing or can't connect.
+    let stale = match st.cache.get(&q) {
+        Cached::Hit(l) => return set_lyrics(app, gen, "found", Some(lyrics::finish(l, &q))),
         Cached::KnownMiss => return set_lyrics(app, gen, "notFound", None),
-        Cached::Unknown => {}
-    }
-    set_lyrics(app, gen, "loading", None);
+        Cached::Stale(l) => {
+            let l = lyrics::finish(l, &q);
+            set_lyrics(app, gen, "found", Some(l.clone()));
+            Some(l)
+        }
+        Cached::Unknown => {
+            set_lyrics(app, gen, "loading", None);
+            None
+        }
+    };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let st = app.state::<AppState>();
-        let (status, l) = match lyrics::find(&st.http, &q).await {
-            Outcome::Found(l) => {
-                st.cache.put(&q, Some(&l));
-                ("found", Some(l))
-            }
-            Outcome::NotFound => {
-                st.cache.put(&q, None);
-                ("notFound", None)
-            }
-            Outcome::Offline => ("offline", None),
+        let outcome = lyrics::find(&st.http, &q).await;
+        let Some(stale) = stale else {
+            let (status, l) = match outcome {
+                Outcome::Found(l) => {
+                    st.cache.put(&q, Some(&l));
+                    ("found", Some(l))
+                }
+                Outcome::NotFound => {
+                    st.cache.put(&q, None);
+                    ("notFound", None)
+                }
+                Outcome::Offline => ("offline", None),
+            };
+            return set_lyrics(&app, gen, status, l);
         };
-        set_lyrics(&app, gen, status, l);
+        // Re-read: the user may have changed the sync offset while we looked.
+        let old = match st.cache.get(&q) {
+            Cached::Hit(l) | Cached::Stale(l) => lyrics::finish(l, &q),
+            _ => stale,
+        };
+        match refresh(&old, outcome) {
+            Refresh::Replace(l) => {
+                st.cache.put(&q, Some(&l));
+                set_lyrics(&app, gen, "found", Some(l));
+            }
+            Refresh::Keep => st.cache.put(&q, Some(&old)),
+            Refresh::Retry => {}
+        }
     });
+}
+
+/// What to do with lyrics cached under older lookup rules once the new lookup is back.
+enum Refresh {
+    /// Show and cache the new lyrics.
+    Replace(Lyrics),
+    /// Keep the old lyrics, now marked as checked under the current rules.
+    Keep,
+    /// Couldn't look: keep the old lyrics as they are, and look again next time.
+    Retry,
+}
+
+/// New lyrics replace old ones unless they are a step down: unsynced where the old
+/// were synced (say LRCLIB failed and another source answered), unless the old ones
+/// were a romanization. Identical lyrics keep the user's sync offset.
+fn refresh(old: &Lyrics, outcome: Outcome) -> Refresh {
+    let text = |l: &Lyrics| l.lines.iter().map(|x| x.text.as_str()).collect::<Vec<_>>().join("\n");
+    match outcome {
+        Outcome::Found(mut new) => {
+            let better_script = lyrics::looks_romanized(&text(old)) && !lyrics::looks_romanized(&text(&new));
+            if new.synced || !old.synced || better_script {
+                if same_lines(old, &new) {
+                    new.offset_ms = old.offset_ms;
+                }
+                Refresh::Replace(new)
+            } else {
+                Refresh::Keep
+            }
+        }
+        Outcome::NotFound => Refresh::Keep,
+        Outcome::Offline => Refresh::Retry,
+    }
+}
+
+fn same_lines(a: &Lyrics, b: &Lyrics) -> bool {
+    a.synced == b.synced
+        && a.lines.len() == b.lines.len()
+        && a.lines.iter().zip(&b.lines).all(|(x, y)| x.time_ms == y.time_ms && x.text == y.text)
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    fn synced(text: &str, offset_ms: i64) -> Lyrics {
+        let lrc: String = text.lines().enumerate().map(|(i, l)| format!("[00:0{i}.00]{l}\n")).collect();
+        Lyrics { offset_ms, ..Lyrics::synced("t", &lrc).unwrap() }
+    }
+
+    const EN: &str = "Walking slowly\nThrough the morning\nCoffee on the table";
+    // Made-up romaji and its original.
+    const ROMAJI: &str = "Asa no hikari ni te wo nobashite\nKimi to aruita kaerimichi\nZutto issho ni ite kureru kana";
+    const JA: &str = "朝の光に手を伸ばして\n君と歩いた帰り道\nずっと一緒にいてくれるかな";
+
+    #[test]
+    fn same_lyrics_keep_the_offset() {
+        let Refresh::Replace(l) = refresh(&synced(EN, 300), Outcome::Found(synced(EN, 0))) else { panic!() };
+        assert_eq!(l.offset_ms, 300);
+        let Refresh::Replace(l) = refresh(&synced(EN, 300), Outcome::Found(synced("Other\nLines\nHere", 0))) else { panic!() };
+        assert_eq!(l.offset_ms, 0, "a different file has its own timing");
+    }
+
+    #[test]
+    fn unsynced_never_replaces_synced() {
+        let plain = Lyrics::plain("t", EN).unwrap();
+        assert!(matches!(refresh(&synced(EN, 0), Outcome::Found(plain)), Refresh::Keep));
+        // ...unless the synced ones were a romanization.
+        let plain_ja = Lyrics::plain("t", JA).unwrap();
+        assert!(matches!(refresh(&synced(ROMAJI, 0), Outcome::Found(plain_ja)), Refresh::Replace(_)));
+    }
+
+    #[test]
+    fn misses_keep_and_offline_retries() {
+        assert!(matches!(refresh(&synced(EN, 0), Outcome::NotFound), Refresh::Keep));
+        assert!(matches!(refresh(&synced(EN, 0), Outcome::Offline), Refresh::Retry));
+    }
 }
 
 // ---------------------------------------------------------------- media worker

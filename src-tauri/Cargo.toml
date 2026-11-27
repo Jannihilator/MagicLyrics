@@ -1,6 +1,6 @@
 [package]
 name = "magiclyrics"
-version = "0.2.10"
+version = "0.2.11"
 description = "Floating, click-through lyrics overlay for the currently playing song"
 edition = "2021"
 

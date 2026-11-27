@@ -470,6 +470,14 @@ html, body {
   color: rgba(255, 255, 255, .5);
   cursor: move;
 }
+#drag .drag-icon {
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  fill: currentColor;
+}
+#drag:hover { color: rgba(255, 255, 255, .8); }
 
 /* Invisible resize corner, always active where drag-resize is supported: hovering it
    shows the resize cursor. Hidden while syncing so it doesn't take lyric clicks. */
