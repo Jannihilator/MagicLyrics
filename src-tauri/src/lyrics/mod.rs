@@ -1,7 +1,7 @@
 //! Lyrics lookup: an ordered chain of providers plus an on-disk cache.
 //!
-//! - Chinese songs: LRCLIB
-//! - Everything else: LRCLIB -> lyrics.ovh
+//! Every song: LRCLIB -> lyrics.ovh (plain only; it carries some Chinese songs
+//! LRCLIB lacks, such as 椅子樂團's 阿May).
 //!
 //! Time-synced lyrics win over plain ones; if no provider has synced lyrics the
 //! first plain result is used. Chinese results in Simplified script are converted
@@ -224,14 +224,9 @@ async fn find_one(
     first_plain: &mut Option<Lyrics>,
     reached_any: &mut bool,
 ) -> Option<Lyrics> {
-    let chinese = is_chinese(&q.title) || is_chinese(&q.artist);
-    let order: &[Provider] = if chinese {
-        &[Provider::Lrclib]
-    } else {
-        &[Provider::Lrclib, Provider::LyricsOvh]
-    };
+    let order = [Provider::Lrclib, Provider::LyricsOvh];
     let debug = std::env::var_os("MAGICLYRICS_DEBUG").is_some();
-    for &p in order {
+    for p in order {
         let r = fetch(p, client, q).await;
         if debug {
             let what = match &r {
@@ -422,6 +417,20 @@ mod tests {
         match live("小幸運", "Hebe Tien", "小幸運", 266) {
             Outcome::Found(l) => {
                 println!("source={} synced={}", l.source, l.synced);
+                let all: String = l.lines.iter().map(|x| x.text.clone()).collect();
+                assert!(!zhconv::is_hans(&all), "should be Traditional");
+            }
+            _ => panic!("not found"),
+        }
+    }
+
+    /// Not on LRCLIB; lyrics.ovh has it (plain, Simplified).
+    #[test]
+    #[ignore]
+    fn live_chinese_lyricsovh_fallback() {
+        match live("阿May", "The Chairs", "", 0) {
+            Outcome::Found(l) => {
+                assert_eq!(l.source, "lyrics.ovh");
                 let all: String = l.lines.iter().map(|x| x.text.clone()).collect();
                 assert!(!zhconv::is_hans(&all), "should be Traditional");
             }

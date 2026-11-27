@@ -1,4 +1,4 @@
-//! lyrics.ovh: keyless plain-text lyrics, used as the English fallback.
+//! lyrics.ovh: keyless plain-text lyrics, the fallback when LRCLIB has nothing.
 
 use super::{Lyrics, Query};
 use reqwest::{Client, StatusCode};
